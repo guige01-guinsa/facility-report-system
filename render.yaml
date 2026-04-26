@@ -2,6 +2,7 @@ services:
   - type: web
     name: facility-report-backend
     runtime: docker
+    plan: free
     rootDir: backend
     envVars:
       - key: OPENAI_API_KEY
@@ -16,6 +17,7 @@ services:
   - type: web
     name: facility-report-frontend
     runtime: docker
+    plan: free
     rootDir: frontend
     envVars:
       - key: NEXT_PUBLIC_API_BASE
