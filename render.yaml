@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: facility-report-backend
+    runtime: docker
+    rootDir: backend
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5.5
+      - key: ALLOWED_ORIGINS
+        value: https://facility-report-frontend.onrender.com
+      - key: ALLOWED_ORIGIN_REGEX
+        value: https://.*\.app\.github\.dev
+
+  - type: web
+    name: facility-report-frontend
+    runtime: docker
+    rootDir: frontend
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE
+        value: https://facility-report-backend.onrender.com
