@@ -5,4 +5,6 @@ frontend/.env.local
 **/__pycache__
 frontend/.next
 frontend/node_modules
+*-server.log
+*-server.err.log
 .DS_Store

@@ -12,6 +12,7 @@ if (!(Test-Path $Python)) {
 Push-Location $Backend
 try {
     & $Python -m compileall app
+    & $Python -m unittest discover -s tests -p "test_*.py" -v
 }
 finally {
     Pop-Location

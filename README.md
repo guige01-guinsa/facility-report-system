@@ -5,7 +5,12 @@
 ## 주요 기능
 
 - 카카오톡 대화 내보내기 `.txt` 업로드
+- 현장 사진 여러 장 업로드
 - 시작일/종료일 기준 기간 필터링
+- 업무 관련 대화, 확인 필요 대화, 제외 대화 자동 분류
+- 사진 파일명/저장시간 기준 자동 매칭 후보 생성
+- 사용자가 사진을 눌러 선택한 뒤 원하는 대화에 바로 연결
+- 불필요한 대화와 사진을 제외한 뒤 검토 상태 그대로 보고서 생성
 - 업무, 담당자, 완료/미완료, 주요 이슈 자동 정리
 - 보고서 복사 후 관리사무소 문서에 붙여넣기
 - 스마트폰 브라우저에서 사용 가능한 모바일 우선 UI
@@ -24,7 +29,7 @@ pwsh -File scripts\setup.ps1
 
 ```env
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.5
+OPENAI_MODEL=gpt-5-nano
 ALLOWED_ORIGINS=http://localhost:3000
 ```
 
@@ -54,6 +59,23 @@ pwsh -File scripts\dev-frontend.ps1
 ```powershell
 pwsh -File scripts\check.ps1
 ```
+
+## 새 보고서 생성 흐름
+
+```text
+카톡 txt 업로드
+→ 현장 사진 여러 장 업로드
+→ 대화 자동 정리
+→ 사진 자동 매칭 후보 생성
+→ 확인 필요 항목만 빠르게 수정
+→ 검토 완료 보고서 생성
+```
+
+대화는 `작업`, `확인`, `제외`로 분류됩니다. 단순 인사, 확인 답장, 카카오톡 시스템 알림, 사진 전송 알림은 기본적으로 `제외` 후보가 됩니다. 잘못 분류된 항목은 화면에서 즉시 `작업`, `확인`, `제외`로 바꿀 수 있습니다.
+
+사진은 파일명에 포함된 촬영시간을 우선 사용합니다. 예를 들어 `KakaoTalk_20260425_143200.jpg`, `IMG_20260425_143200.jpg` 형식은 대화 시간과 비교해 자동 매칭됩니다. 파일명 시간이 없으면 브라우저가 제공하는 파일 수정시간을 사용하므로 `확인 필요`로 남을 수 있습니다.
+
+매칭 수정은 사진을 먼저 선택하고, 원하는 대화 카드의 `선택 사진 연결` 버튼을 누르는 방식입니다. 사진별로 `전`, `중`, `후`, `자료` 역할을 지정할 수 있고, 잘못 붙은 사진은 `분리` 또는 `제외`할 수 있습니다.
 
 ### 3. 폰 원격개발: GitHub Codespaces
 
@@ -106,10 +128,10 @@ Backend:
 
 ```text
 Root Directory: backend
-Runtime: Docker
-Environment Variables:
+  Runtime: Docker
+  Environment Variables:
   OPENAI_API_KEY=<선택>
-  OPENAI_MODEL=gpt-5.5
+  OPENAI_MODEL=gpt-5-nano
   ALLOWED_ORIGINS=https://facility-report-frontend.onrender.com
   ALLOWED_ORIGIN_REGEX=https://.*\.app\.github\.dev
 ```
@@ -156,6 +178,7 @@ docker compose up --build
 - 실제 입주민 연락처, 차량번호, 민감정보가 포함될 수 있습니다.
 - 운영 배포 전 접근 권한, HTTPS, 로그 마스킹, 파일 자동삭제 정책을 추가해야 합니다.
 - 대화 원본 파일은 장기 보관하지 않는 방향을 권장합니다.
+- 현재 검토 API는 카카오톡 원문과 이미지를 서버 파일시스템에 저장하지 않고 요청 중에만 처리합니다.
 
 ## 향후 확장
 

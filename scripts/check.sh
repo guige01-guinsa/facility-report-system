@@ -12,6 +12,7 @@ fi
 
 cd "$BACKEND"
 ".venv/bin/python" -m compileall app
+".venv/bin/python" -m unittest discover -s tests -p "test_*.py" -v
 
 cd "$FRONTEND"
 npm run build
