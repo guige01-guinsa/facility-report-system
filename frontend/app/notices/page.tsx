@@ -92,7 +92,7 @@ const STATUS_OPTIONS: { value: NoticeStatus | ''; label: string }[] = [
   { value: 'unauthorized', label: '무단 게시' },
 ];
 
-const ATTACHMENT_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.hwp,.hwpx,.txt';
+const ATTACHMENT_ACCEPT = '.jpg,.jpeg,.png,.webp,.gif,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.hwp,.hwpx,.txt';
 
 const blankForm = (): FormState => {
   const today = formatDateInput(new Date());
@@ -155,6 +155,12 @@ function imageSrc(path: string | null) {
   return `${getApiBase()}${path}`;
 }
 
+function fileExtension(post: BoardPost) {
+  const filename = (post.attachment_filename || post.attachment_url || '').toLowerCase();
+  const dotIndex = filename.lastIndexOf('.');
+  return dotIndex >= 0 ? filename.slice(dotIndex + 1) : '';
+}
+
 function isImageFile(post: BoardPost) {
   const contentType = post.attachment_content_type || '';
   return Boolean(post.image_url || contentType.startsWith('image/'));
@@ -168,6 +174,26 @@ function isPdfFile(post: BoardPost) {
 
 function fileLabel(post: BoardPost) {
   return post.attachment_filename || (post.attachment_url ? post.attachment_url.split('/').pop() : '') || '게시파일';
+}
+
+function isOfficePreviewFile(post: BoardPost) {
+  return ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(fileExtension(post));
+}
+
+function isTextPreviewFile(post: BoardPost) {
+  return fileExtension(post) === 'txt';
+}
+
+function isHwpFile(post: BoardPost) {
+  return ['hwp', 'hwpx'].includes(fileExtension(post));
+}
+
+function previewMessage(post: BoardPost) {
+  if (!post.attachment_url) return '파일 없음';
+  if (isTextPreviewFile(post)) return 'TXT 파일은 원본 보기로 확인합니다.';
+  if (isHwpFile(post)) return 'HWP/HWPX는 기기 환경에 따라 원본 보기로 확인합니다.';
+  if (isOfficePreviewFile(post)) return '문서 파일은 아래 문서목록에서 열 수 있습니다.';
+  return fileLabel(post);
 }
 
 async function responseMessage(res: Response) {
@@ -552,6 +578,7 @@ export default function NoticeBoardPage() {
                 <label className="grid gap-1 text-sm font-bold">
                   게시파일
                   <input type="file" accept={ATTACHMENT_ACCEPT} onChange={event => setAttachmentFile(event.target.files?.[0] || null)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-sm" />
+                  <span className="text-xs font-semibold text-slate-500">이미지, PDF, Word, Excel, PPT, HWP, TXT 파일을 선택할 수 있습니다.</span>
                 </label>
               )}
               <button disabled={loading} className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:bg-slate-400">
@@ -637,8 +664,11 @@ export default function NoticeBoardPage() {
                       ) : post.attachment_url && isPdfFile(post) ? (
                         <iframe src={imageSrc(post.attachment_url)} title={post.title} className="h-full w-full border-0 bg-white" />
                       ) : (
-                        <div className="flex h-full items-center justify-center px-3 text-center text-xs font-bold text-slate-500">
-                          {post.attachment_url ? fileLabel(post) : '파일 없음'}
+                        <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center text-xs font-bold text-slate-500">
+                          <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-slate-700">
+                            {post.attachment_url ? fileExtension(post).toUpperCase() || 'FILE' : 'EMPTY'}
+                          </span>
+                          <span>{previewMessage(post)}</span>
                         </div>
                       )}
                     </div>
@@ -659,7 +689,7 @@ export default function NoticeBoardPage() {
                       </div>
                       {post.description && <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{post.description}</p>}
                       {post.note && <p className="mt-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-600">메모: {post.note}</p>}
-                      {post.attachment_url && (
+                      {post.attachment_url && (isImageFile(post) || isPdfFile(post)) && (
                         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-600">
                           <span className="min-w-0 break-words">게시파일: {fileLabel(post)}</span>
                           <a href={imageSrc(post.attachment_url)} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-bold text-slate-700">
@@ -668,6 +698,25 @@ export default function NoticeBoardPage() {
                           <a href={imageSrc(post.attachment_url)} download className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-bold text-slate-700">
                             다운로드
                           </a>
+                        </div>
+                      )}
+                      {post.attachment_url && !isImageFile(post) && !isPdfFile(post) && (
+                        <div className="mt-2 rounded-xl border border-slate-200 bg-white p-3">
+                          <div className="text-xs font-black text-slate-500">문서목록</div>
+                          <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-black text-slate-900">{fileLabel(post)}</div>
+                              <div className="mt-1 text-xs font-semibold text-slate-500">
+                                형식: {(fileExtension(post) || 'file').toUpperCase()}
+                              </div>
+                            </div>
+                            <a href={imageSrc(post.attachment_url)} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-slate-300 px-3 py-2 text-center text-xs font-bold text-slate-700">
+                              열기
+                            </a>
+                            <a href={imageSrc(post.attachment_url)} download className="rounded-lg border border-slate-300 px-3 py-2 text-center text-xs font-bold text-slate-700">
+                              다운로드
+                            </a>
+                          </div>
                         </div>
                       )}
                       {post.removal_image_url && (
