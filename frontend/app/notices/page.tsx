@@ -55,6 +55,18 @@ type SelectedTarget = {
   floor: string;
 };
 
+type SelectedBatch = {
+  id: string;
+  label: string;
+  targets: SelectedTarget[];
+};
+
+type TargetScopeState = {
+  allBuildings: boolean;
+  allLines: boolean;
+  allFloors: boolean;
+};
+
 type Summary = {
   total: number;
   posted: number;
@@ -137,6 +149,12 @@ const blankLocationGenerator = (): LocationGenerateState => ({
   floors: '',
   excluded_floors: '',
   sort_order_start: '0',
+});
+
+const blankTargetScope = (): TargetScopeState => ({
+  allBuildings: false,
+  allLines: false,
+  allFloors: false,
 });
 
 function getApiBase() {
@@ -256,6 +274,10 @@ function targetKey(target: SelectedTarget) {
   return `${target.location}__${target.line}__${target.floor}`;
 }
 
+function batchId() {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function NoticeBoardPage() {
   const [posts, setPosts] = useState<BoardPost[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
@@ -265,7 +287,8 @@ export default function NoticeBoardPage() {
   const [locationPreviewTruncated, setLocationPreviewTruncated] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [form, setForm] = useState<FormState>(() => blankForm());
-  const [selectedTargets, setSelectedTargets] = useState<SelectedTarget[]>([]);
+  const [targetScope, setTargetScope] = useState<TargetScopeState>(() => blankTargetScope());
+  const [selectedBatches, setSelectedBatches] = useState<SelectedBatch[]>([]);
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
@@ -281,14 +304,27 @@ export default function NoticeBoardPage() {
     [posts],
   );
   const buildingOptions = useMemo(() => Array.from(new Set(locationOptions.map(option => option.building))).sort(), [locationOptions]);
-  const lineOptions = useMemo(
-    () => Array.from(new Set(locationOptions.filter(option => option.building === form.location).map(option => option.line))).sort(),
-    [form.location, locationOptions],
-  );
-  const floorOptions = useMemo(
-    () => Array.from(new Set(locationOptions.filter(option => option.building === form.location && option.line === form.line).map(option => option.floor))).sort(),
-    [form.line, form.location, locationOptions],
-  );
+  const selectedTargets = useMemo(() => {
+    const deduped = new Map<string, SelectedTarget>();
+    selectedBatches.forEach(batch => {
+      batch.targets.forEach(target => {
+        deduped.set(targetKey(target), target);
+      });
+    });
+    return Array.from(deduped.values());
+  }, [selectedBatches]);
+  const scopedLineOptions = useMemo(() => {
+    const source = targetScope.allBuildings ? locationOptions : locationOptions.filter(option => option.building === form.location);
+    return Array.from(new Set(source.map(option => option.line))).sort();
+  }, [form.location, locationOptions, targetScope.allBuildings]);
+  const scopedFloorOptions = useMemo(() => {
+    const source = locationOptions.filter(option => {
+      if (!targetScope.allBuildings && option.building !== form.location) return false;
+      if (!targetScope.allLines && option.line !== form.line) return false;
+      return true;
+    });
+    return Array.from(new Set(source.map(option => option.floor))).sort();
+  }, [form.line, form.location, locationOptions, targetScope.allBuildings, targetScope.allLines]);
   const groupedLocations = useMemo(() => {
     return buildingOptions.map(building => {
       const rows = locationOptions.filter(option => option.building === building);
@@ -330,7 +366,8 @@ export default function NoticeBoardPage() {
 
   function resetForm() {
     setForm(blankForm());
-    setSelectedTargets([]);
+    setTargetScope(blankTargetScope());
+    setSelectedBatches([]);
     setAttachmentFile(null);
     setEditingId(null);
   }
@@ -343,19 +380,72 @@ export default function NoticeBoardPage() {
     setForm(current => ({ ...current, line: value, floor: '' }));
   }
 
-  function addSelectedTarget() {
-    if (!form.location.trim() || !form.line.trim() || !form.floor.trim()) {
-      setNotice('동, 라인, 층을 모두 선택한 뒤 추가해 주세요.');
+  function updateScope<K extends keyof TargetScopeState>(key: K, checked: boolean) {
+    setTargetScope(current => {
+      const next = { ...current, [key]: checked };
+      return next;
+    });
+    if (key === 'allBuildings' && checked) {
+      setForm(current => ({ ...current, location: '', line: '', floor: '' }));
       return;
     }
-    const nextTarget = { location: form.location, line: form.line, floor: form.floor };
-    setSelectedTargets(current => (current.some(item => targetKey(item) === targetKey(nextTarget)) ? current : [...current, nextTarget]));
-    setForm(current => ({ ...current, location: '', line: '', floor: '' }));
-    setNotice('선택 위치를 추가했습니다.');
+    if (key === 'allLines' && checked) {
+      setForm(current => ({ ...current, line: '', floor: '' }));
+      return;
+    }
+    if (key === 'allFloors' && checked) {
+      setForm(current => ({ ...current, floor: '' }));
+    }
   }
 
-  function removeSelectedTarget(target: SelectedTarget) {
-    setSelectedTargets(current => current.filter(item => targetKey(item) !== targetKey(target)));
+  function buildTargetsFromScope() {
+    const matches = locationOptions.filter(option => {
+      if (!targetScope.allBuildings && option.building !== form.location) return false;
+      if (!targetScope.allLines && option.line !== form.line) return false;
+      if (!targetScope.allFloors && option.floor !== form.floor) return false;
+      return true;
+    });
+    return matches.map(option => ({
+      location: option.building,
+      line: option.line,
+      floor: option.floor,
+    }));
+  }
+
+  function buildScopeLabel() {
+    const buildingLabel = targetScope.allBuildings ? '전체동' : form.location;
+    const lineLabel = targetScope.allLines ? '전체라인' : form.line;
+    const floorLabel = targetScope.allFloors ? '전체층' : form.floor;
+    return `${buildingLabel} / ${lineLabel} / ${floorLabel}`;
+  }
+
+  function addSelectedTarget() {
+    if (!targetScope.allBuildings && !form.location.trim()) {
+      setNotice('동을 선택해 주세요.');
+      return;
+    }
+    if (!targetScope.allLines && !form.line.trim()) {
+      setNotice('라인을 선택해 주세요.');
+      return;
+    }
+    if (!targetScope.allFloors && !form.floor.trim()) {
+      setNotice('층을 선택해 주세요.');
+      return;
+    }
+    const targets = buildTargetsFromScope();
+    if (targets.length === 0) {
+      setNotice('선택 규칙에 맞는 위치가 없습니다.');
+      return;
+    }
+    const label = `${buildScopeLabel()} (${targets.length}건)`;
+    setSelectedBatches(current => [...current, { id: batchId(), label, targets }]);
+    setForm(current => ({ ...current, location: '', line: '', floor: '' }));
+    setTargetScope(blankTargetScope());
+    setNotice(`선택 규칙으로 ${targets.length}건을 추가했습니다.`);
+  }
+
+  function removeSelectedBatch(batchIdToRemove: string) {
+    setSelectedBatches(current => current.filter(batch => batch.id !== batchIdToRemove));
   }
 
   async function previewLocationGeneration() {
@@ -514,7 +604,8 @@ export default function NoticeBoardPage() {
   function startEdit(post: BoardPost) {
     setEditingId(post.id);
     setForm(formFromNotice(post));
-    setSelectedTargets([]);
+    setTargetScope(blankTargetScope());
+    setSelectedBatches([]);
     setAttachmentFile(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -581,10 +672,26 @@ export default function NoticeBoardPage() {
                 제목
                 <input value={form.title} onChange={event => updateField('title', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="예: 지하주차장 청소 안내" />
               </label>
+              {!editingId && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-300 bg-slate-50 px-3 py-3 text-sm font-bold">
+                    <input type="checkbox" checked={targetScope.allBuildings} onChange={event => updateScope('allBuildings', event.target.checked)} className="h-4 w-4" />
+                    전체동 적용
+                  </label>
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-300 bg-slate-50 px-3 py-3 text-sm font-bold">
+                    <input type="checkbox" checked={targetScope.allLines} onChange={event => updateScope('allLines', event.target.checked)} className="h-4 w-4" />
+                    전체라인 적용
+                  </label>
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-300 bg-slate-50 px-3 py-3 text-sm font-bold">
+                    <input type="checkbox" checked={targetScope.allFloors} onChange={event => updateScope('allFloors', event.target.checked)} className="h-4 w-4" />
+                    전체층 적용
+                  </label>
+                </div>
+              )}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <label className="grid gap-1 text-sm font-bold">
                   동
-                  <select value={form.location} onChange={event => updateBuilding(event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold">
+                  <select value={form.location} onChange={event => updateBuilding(event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" disabled={!editingId && targetScope.allBuildings}>
                     <option value="">동 선택</option>
                     {form.location && !buildingOptions.includes(form.location) && <option value={form.location}>{form.location}</option>}
                     {buildingOptions.map(building => (
@@ -596,10 +703,10 @@ export default function NoticeBoardPage() {
                 </label>
                 <label className="grid gap-1 text-sm font-bold">
                   라인
-                  <select value={form.line} onChange={event => updateLine(event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" disabled={!form.location}>
+                  <select value={form.line} onChange={event => updateLine(event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" disabled={(!editingId && targetScope.allLines) || (!targetScope.allBuildings && !form.location)}>
                     <option value="">라인 선택</option>
-                    {form.line && !lineOptions.includes(form.line) && <option value={form.line}>{form.line}</option>}
-                    {lineOptions.map(line => (
+                    {form.line && !scopedLineOptions.includes(form.line) && <option value={form.line}>{form.line}</option>}
+                    {scopedLineOptions.map(line => (
                       <option key={line} value={line}>
                         {line}
                       </option>
@@ -608,10 +715,10 @@ export default function NoticeBoardPage() {
                 </label>
                 <label className="grid gap-1 text-sm font-bold">
                   층
-                  <select value={form.floor} onChange={event => updateField('floor', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" disabled={!form.line}>
+                  <select value={form.floor} onChange={event => updateField('floor', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" disabled={(!editingId && targetScope.allFloors) || (!targetScope.allLines && !form.line) || (!targetScope.allBuildings && !form.location)}>
                     <option value="">층 선택</option>
-                    {form.floor && !floorOptions.includes(form.floor) && <option value={form.floor}>{form.floor}</option>}
-                    {floorOptions.map(floor => (
+                    {form.floor && !scopedFloorOptions.includes(form.floor) && <option value={form.floor}>{form.floor}</option>}
+                    {scopedFloorOptions.map(floor => (
                       <option key={floor} value={floor}>
                         {floor}
                       </option>
@@ -630,17 +737,17 @@ export default function NoticeBoardPage() {
                       <div className="text-xs font-bold text-slate-500">{selectedTargets.length}건</div>
                     </div>
                     <div className="mt-3 grid gap-2">
-                      {selectedTargets.map(target => (
-                        <div key={targetKey(target)} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                      {selectedBatches.map(batch => (
+                        <div key={batch.id} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
                           <span className="min-w-0 break-words text-xs font-bold text-slate-700">
-                            {target.location} / {target.line} / {target.floor}
+                            {batch.label}
                           </span>
-                          <button type="button" onClick={() => removeSelectedTarget(target)} className="shrink-0 rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-bold text-rose-700">
+                          <button type="button" onClick={() => removeSelectedBatch(batch.id)} className="shrink-0 rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-bold text-rose-700">
                             제거
                           </button>
                         </div>
                       ))}
-                      {selectedTargets.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">위치를 추가하면 여기에서 한 번에 등록됩니다.</div>}
+                      {selectedBatches.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">위치를 추가하면 적용 규칙과 건수가 여기에서 보입니다.</div>}
                     </div>
                   </div>
                 </div>
