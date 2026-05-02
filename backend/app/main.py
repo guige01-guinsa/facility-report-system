@@ -2,14 +2,19 @@ import json
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from .config import OPENAI_MODEL_OPTIONS, settings
 from .kakao_parser import parse_diagnostics, parse_kakao_chat, filter_by_date
+from .notice_board import UPLOAD_DIR, router as notice_board_router
 from .openai_usage import get_openai_usage_snapshot
 from .report_generator import generate_report, generate_reviewed_report
 from .review_builder import build_image_review_session, build_review_session, decode_uploaded_text
 
 app = FastAPI(title="Facility Report System", version="0.1.0")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+app.include_router(notice_board_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,3 +152,4 @@ def report_reviewed(payload: ReviewedReportRequest):
             payload.ai_model,
         )
     }
+

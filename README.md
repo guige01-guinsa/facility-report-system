@@ -14,6 +14,8 @@
 - 업무, 담당자, 완료/미완료, 주요 이슈 자동 정리
 - 보고서 복사 후 관리사무소 문서에 붙여넣기
 - 스마트폰 브라우저에서 사용 가능한 모바일 우선 UI
+- 독립 게시물 관리 화면 `/notices`
+- 안내/공고문/전입출/상업게시물 게시 기간 및 철거 이력 관리
 
 ## 실행 방법
 
@@ -53,6 +55,7 @@ pwsh -File scripts\dev-frontend.ps1
 
 - Frontend: http://localhost:3000
 - Backend health: http://localhost:8000/health
+- 게시물 관리: http://localhost:3000/notices
 
 검증:
 
@@ -186,3 +189,4 @@ docker compose up --build
 - 담당자별 월간 업무 통계
 - 반복 민원/위험 키워드 알림
 - Google Drive 보고서 저장
+- 주차단속AI와 통합 포털 메뉴 연결
