@@ -42,6 +42,13 @@ type LocationOption = {
   sort_order: number;
 };
 
+type GeneratedLocationPreview = {
+  building: string;
+  line: string;
+  floor: string;
+  sort_order: number;
+};
+
 type Summary = {
   total: number;
   posted: number;
@@ -51,11 +58,12 @@ type Summary = {
   unauthorized: number;
 };
 
-type LocationFormState = {
-  building: string;
-  line: string;
-  floor: string;
-  sort_order: string;
+type LocationGenerateState = {
+  buildings: string;
+  lines: string;
+  floors: string;
+  excluded_floors: string;
+  sort_order_start: string;
 };
 
 type FormState = {
@@ -117,11 +125,12 @@ const blankForm = (): FormState => {
   };
 };
 
-const blankLocationForm = (): LocationFormState => ({
-  building: '',
-  line: '',
-  floor: '',
-  sort_order: '0',
+const blankLocationGenerator = (): LocationGenerateState => ({
+  buildings: '',
+  lines: '',
+  floors: '',
+  excluded_floors: '',
+  sort_order_start: '0',
 });
 
 function getApiBase() {
@@ -240,7 +249,10 @@ function formFromNotice(row: BoardPost): FormState {
 export default function NoticeBoardPage() {
   const [posts, setPosts] = useState<BoardPost[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
-  const [locationForm, setLocationForm] = useState<LocationFormState>(() => blankLocationForm());
+  const [locationGenerator, setLocationGenerator] = useState<LocationGenerateState>(() => blankLocationGenerator());
+  const [locationPreview, setLocationPreview] = useState<GeneratedLocationPreview[]>([]);
+  const [locationPreviewCount, setLocationPreviewCount] = useState(0);
+  const [locationPreviewTruncated, setLocationPreviewTruncated] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [form, setForm] = useState<FormState>(() => blankForm());
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
@@ -266,6 +278,13 @@ export default function NoticeBoardPage() {
     () => Array.from(new Set(locationOptions.filter(option => option.building === form.location && option.line === form.line).map(option => option.floor))).sort(),
     [form.line, form.location, locationOptions],
   );
+  const groupedLocations = useMemo(() => {
+    return buildingOptions.map(building => {
+      const rows = locationOptions.filter(option => option.building === building);
+      const lines = Array.from(new Set(rows.map(option => option.line)));
+      return { building, count: rows.length, lines };
+    });
+  }, [buildingOptions, locationOptions]);
 
   async function loadPosts() {
     const params = new URLSearchParams({ limit: '150' });
@@ -312,39 +331,68 @@ export default function NoticeBoardPage() {
     setForm(current => ({ ...current, line: value, floor: '' }));
   }
 
-  async function saveLocationOption() {
-    if (!locationForm.building.trim() || !locationForm.line.trim() || !locationForm.floor.trim()) {
-      setNotice('동, 라인, 층을 모두 입력해 주세요.');
-      return;
-    }
+  async function previewLocationGeneration() {
     setLoading(true);
     try {
-      const res = await fetch(`${getApiBase()}/api/notices/locations`, {
+      const res = await fetch(`${getApiBase()}/api/notices/locations/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...locationForm, sort_order: Number(locationForm.sort_order || 0) }),
+        body: JSON.stringify({
+          ...locationGenerator,
+          sort_order_start: Number(locationGenerator.sort_order_start || 0),
+          dry_run: true,
+        }),
       });
       if (!res.ok) throw new Error(await responseMessage(res));
-      setLocationForm(blankLocationForm());
-      await loadLocations();
-      setNotice('위치 옵션을 등록했습니다.');
+      const data = await res.json();
+      setLocationPreview(Array.isArray(data.items) ? data.items : []);
+      setLocationPreviewCount(Number(data.preview_count || 0));
+      setLocationPreviewTruncated(Boolean(data.truncated));
+      setNotice(`위치 자동생성 미리보기를 불러왔습니다. 총 ${Number(data.preview_count || 0)}건입니다.`);
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : '위치 옵션 저장 중 오류가 발생했습니다.');
+      setNotice(err instanceof Error ? err.message : '위치 미리보기 중 오류가 발생했습니다.');
     } finally {
       setLoading(false);
     }
   }
 
-  async function deleteLocationOption(option: LocationOption) {
-    if (!confirm(`${option.building} / ${option.line} / ${option.floor} 위치 옵션을 삭제하시겠습니까?`)) return;
+  async function saveGeneratedLocations() {
     setLoading(true);
     try {
-      const res = await fetch(`${getApiBase()}/api/notices/locations/${option.id}`, { method: 'DELETE' });
+      const res = await fetch(`${getApiBase()}/api/notices/locations/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...locationGenerator,
+          sort_order_start: Number(locationGenerator.sort_order_start || 0),
+          dry_run: false,
+        }),
+      });
+      if (!res.ok) throw new Error(await responseMessage(res));
+      const data = await res.json();
+      await loadLocations();
+      setLocationPreview([]);
+      setLocationPreviewCount(0);
+      setLocationPreviewTruncated(false);
+      setLocationGenerator(blankLocationGenerator());
+      setNotice(`위치 ${Number(data.inserted || 0)}건을 등록했습니다. 중복 ${Number(data.skipped || 0)}건은 건너뛰었습니다.`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '위치 자동생성 저장 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteLocationBuilding(building: string) {
+    if (!confirm(`${building} 전체 위치 데이터를 삭제하시겠습니까?`)) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${getApiBase()}/api/notices/locations/building/${encodeURIComponent(building)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await responseMessage(res));
       await loadLocations();
-      setNotice('위치 옵션을 삭제했습니다.');
+      setNotice(`${building} 위치 데이터를 삭제했습니다.`);
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : '위치 옵션 삭제 중 오류가 발생했습니다.');
+      setNotice(err instanceof Error ? err.message : '위치 데이터 삭제 중 오류가 발생했습니다.');
     } finally {
       setLoading(false);
     }
@@ -528,7 +576,7 @@ export default function NoticeBoardPage() {
               </div>
               {locationOptions.length === 0 && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-950">
-                  먼저 아래 위치 관리에서 동/라인/층을 등록하세요.
+                  먼저 아래 자동 생성에서 동/라인/층을 등록하세요.
                 </div>
               )}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -586,31 +634,88 @@ export default function NoticeBoardPage() {
               </button>
             </div>
 
-            <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <summary className="cursor-pointer text-sm font-black text-slate-900">위치 관리</summary>
-              <div className="mt-3 grid gap-2">
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-                  <input value={locationForm.building} onChange={event => setLocationForm(current => ({ ...current, building: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="동 예: 101동" />
-                  <input value={locationForm.line} onChange={event => setLocationForm(current => ({ ...current, line: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="라인 예: 1-2라인" />
-                  <input value={locationForm.floor} onChange={event => setLocationForm(current => ({ ...current, floor: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="층 예: 1층" />
-                  <input value={locationForm.sort_order} onChange={event => setLocationForm(current => ({ ...current, sort_order: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="순서" inputMode="numeric" />
+            <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3" open>
+              <summary className="cursor-pointer text-sm font-black text-slate-900">위치 자동 생성</summary>
+              <div className="mt-3 grid gap-3">
+                <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs font-semibold leading-6 text-slate-600">
+                  <div>동 범위 예: 101-110, 101동, 102동, 201동</div>
+                  <div>라인 목록 예: 1-2라인, 3-4라인</div>
+                  <div>층 범위 예: B2, B1, 1-29</div>
+                  <div>제외층 예: 4층, 13층 또는 4, 13</div>
                 </div>
-                <button type="button" onClick={saveLocationOption} disabled={loading} className="rounded-xl bg-emerald-800 px-3 py-2 text-sm font-black text-white disabled:bg-slate-300">
-                  위치 등록
-                </button>
+                <label className="grid gap-1 text-sm font-bold">
+                  동 범위
+                  <textarea value={locationGenerator.buildings} onChange={event => setLocationGenerator(current => ({ ...current, buildings: event.target.value }))} className="min-h-20 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-3 font-semibold" placeholder="101-110 또는 101동, 102동, 201동" />
+                </label>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1 text-sm font-bold">
+                    라인 목록
+                    <textarea value={locationGenerator.lines} onChange={event => setLocationGenerator(current => ({ ...current, lines: event.target.value }))} className="min-h-20 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-3 font-semibold" placeholder="1-2라인, 3-4라인" />
+                  </label>
+                  <label className="grid gap-1 text-sm font-bold">
+                    층 범위
+                    <textarea value={locationGenerator.floors} onChange={event => setLocationGenerator(current => ({ ...current, floors: event.target.value }))} className="min-h-20 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-3 font-semibold" placeholder="B2, B1, 1-29" />
+                  </label>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_120px]">
+                  <label className="grid gap-1 text-sm font-bold">
+                    제외층
+                    <input value={locationGenerator.excluded_floors} onChange={event => setLocationGenerator(current => ({ ...current, excluded_floors: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-3 font-semibold" placeholder="4층, 13층" />
+                  </label>
+                  <label className="grid gap-1 text-sm font-bold">
+                    시작 순서
+                    <input value={locationGenerator.sort_order_start} onChange={event => setLocationGenerator(current => ({ ...current, sort_order_start: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-3 font-semibold" inputMode="numeric" />
+                  </label>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <button type="button" onClick={previewLocationGeneration} disabled={loading} className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-black text-slate-800 disabled:bg-slate-100">
+                    미리보기
+                  </button>
+                  <button type="button" onClick={saveGeneratedLocations} disabled={loading} className="rounded-xl bg-emerald-800 px-3 py-3 text-sm font-black text-white disabled:bg-slate-300">
+                    자동 생성 저장
+                  </button>
+                </div>
               </div>
-              <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto pr-1">
-                {locationOptions.map(option => (
-                  <div key={option.id} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                    <span className="min-w-0 break-words text-xs font-bold text-slate-700">
-                      {option.building} / {option.line} / {option.floor}
-                    </span>
-                    <button type="button" onClick={() => deleteLocationOption(option)} className="shrink-0 rounded-lg border border-rose-300 px-2 py-1 text-xs font-bold text-rose-700">
-                      삭제
-                    </button>
+
+              <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-black text-slate-900">생성 미리보기</div>
+                    <div className="text-xs font-bold text-slate-500">{locationPreviewCount}건</div>
                   </div>
-                ))}
-                {locationOptions.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">등록된 위치 옵션이 없습니다.</div>}
+                  <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto pr-1">
+                    {locationPreview.map((item, index) => (
+                      <div key={`${item.building}-${item.line}-${item.floor}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">
+                        {item.building} / {item.line} / {item.floor}
+                      </div>
+                    ))}
+                    {locationPreview.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">미리보기를 실행하면 생성될 위치가 표시됩니다.</div>}
+                  </div>
+                  {locationPreviewTruncated && <div className="mt-2 text-xs font-semibold text-slate-500">미리보기는 앞의 일부만 표시합니다.</div>}
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-black text-slate-900">등록된 동</div>
+                    <div className="text-xs font-bold text-slate-500">{groupedLocations.length}개 동</div>
+                  </div>
+                  <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto pr-1">
+                    {groupedLocations.map(group => (
+                      <div key={group.building} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-sm font-black text-slate-900">{group.building}</div>
+                            <div className="mt-1 text-xs font-semibold text-slate-500">{group.count}개 위치 / 라인 {group.lines.join(', ')}</div>
+                          </div>
+                          <button type="button" onClick={() => deleteLocationBuilding(group.building)} className="shrink-0 rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-bold text-rose-700">
+                            동 삭제
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {groupedLocations.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">등록된 위치 옵션이 없습니다.</div>}
+                  </div>
+                </div>
               </div>
             </details>
           </form>

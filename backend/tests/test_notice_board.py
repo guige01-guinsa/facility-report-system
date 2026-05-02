@@ -106,6 +106,64 @@ class NoticeBoardTests(unittest.TestCase):
         self.assertTrue(body["attachment_url"].endswith(".pdf"))
         self.assertIsNone(body["image_url"])
 
+    def test_location_generator_supports_preview_and_insert(self):
+        preview = self.client.post(
+            "/api/notices/locations/generate",
+            json={
+                "buildings": "101-102",
+                "lines": "1-2, 3-4라인",
+                "floors": "B1, 1-3",
+                "excluded_floors": "2층",
+                "sort_order_start": 10,
+                "dry_run": True,
+            },
+        )
+        self.assertEqual(preview.status_code, 200)
+        preview_body = preview.json()
+        self.assertEqual(preview_body["preview_count"], 12)
+        self.assertEqual(preview_body["items"][0]["building"], "101동")
+        self.assertEqual(preview_body["items"][0]["line"], "1-2라인")
+        self.assertEqual(preview_body["items"][0]["floor"], "B1")
+
+        created = self.client.post(
+            "/api/notices/locations/generate",
+            json={
+                "buildings": "101-102",
+                "lines": "1-2, 3-4라인",
+                "floors": "B1, 1-3",
+                "excluded_floors": "2층",
+                "sort_order_start": 10,
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["inserted"], 12)
+        self.assertEqual(created.json()["skipped"], 0)
+
+        locations = self.client.get("/api/notices/locations")
+        self.assertEqual(locations.status_code, 200)
+        tree = locations.json()["tree"]
+        self.assertEqual(tree["101동"]["1-2라인"], ["B1", "1층", "3층"])
+
+    def test_location_delete_by_building(self):
+        created = self.client.post(
+            "/api/notices/locations/generate",
+            json={
+                "buildings": "101-102",
+                "lines": "1라인",
+                "floors": "1-2",
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+
+        deleted = self.client.delete("/api/notices/locations/building/101동")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json()["building"], "101동")
+
+        locations = self.client.get("/api/notices/locations")
+        tree = locations.json()["tree"]
+        self.assertNotIn("101동", tree)
+        self.assertIn("102동", tree)
+
     def test_rejects_invalid_period(self):
         response = self.client.post(
             "/api/notices",

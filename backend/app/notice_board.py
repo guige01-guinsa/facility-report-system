@@ -80,6 +80,15 @@ class NoticeLocationRequest(BaseModel):
     sort_order: int = Field(0, ge=0, le=9999)
 
 
+class NoticeLocationGenerateRequest(BaseModel):
+    buildings: str
+    lines: str
+    floors: str
+    excluded_floors: str | None = None
+    sort_order_start: int = Field(0, ge=0, le=9999)
+    dry_run: bool = False
+
+
 class RemovalRequest(BaseModel):
     removal_note: str | None = Field(None, max_length=500)
 
@@ -353,6 +362,137 @@ def normalize_location_payload(payload: NoticeLocationRequest) -> dict[str, Any]
     }
 
 
+def split_spec_tokens(spec: str | None) -> list[str]:
+    raw = str(spec or "").replace("\r", "\n")
+    tokens = [token.strip() for chunk in raw.split("\n") for token in chunk.split(",")]
+    return [token for token in tokens if token]
+
+
+def normalize_building_label(token: str) -> str:
+    text = token.strip()
+    if re.fullmatch(r"\d+", text):
+        return f"{text}동"
+    return text
+
+
+def normalize_line_label(token: str) -> str:
+    text = token.strip()
+    if not text:
+        return text
+    if "라인" in text:
+        return text
+    if re.fullmatch(r"[\d\s\-~]+", text):
+        return f"{text}라인"
+    return text
+
+
+def normalize_floor_label(token: str) -> str:
+    text = token.strip()
+    if not text:
+        return text
+    upper = text.upper().replace(" ", "")
+    if re.fullmatch(r"B\d+", upper):
+        return upper
+    if re.fullmatch(r"\d+", text):
+        return f"{int(text)}층"
+    if re.fullmatch(r"\d+층", text):
+        return f"{int(text[:-1])}층"
+    return text
+
+
+def expand_buildings(spec: str) -> list[str]:
+    result: list[str] = []
+    for token in split_spec_tokens(spec):
+        match = re.fullmatch(r"(\d+)\s*(동)?\s*[-~]\s*(\d+)\s*(동)?", token)
+        if match:
+            start = int(match.group(1))
+            end = int(match.group(3))
+            step = 1 if start <= end else -1
+            width = max(len(match.group(1)), len(match.group(3)))
+            for value in range(start, end + step, step):
+                result.append(f"{value:0{width}d}동")
+            continue
+        result.append(normalize_building_label(token))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in result:
+        if item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
+
+
+def expand_lines(spec: str) -> list[str]:
+    result = [normalize_line_label(token) for token in split_spec_tokens(spec)]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in result:
+        if item and item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
+
+
+def expand_floors(spec: str | None) -> list[str]:
+    result: list[str] = []
+    for token in split_spec_tokens(spec):
+        compact = token.strip().replace(" ", "")
+        basement_match = re.fullmatch(r"B(\d+)\s*[-~]\s*B(\d+)", compact, flags=re.IGNORECASE)
+        if basement_match:
+            start = int(basement_match.group(1))
+            end = int(basement_match.group(2))
+            step = 1 if start <= end else -1
+            for value in range(start, end + step, step):
+                result.append(f"B{value}")
+            continue
+        floor_range_match = re.fullmatch(r"(\d+)(층)?\s*[-~]\s*(\d+)(층)?", compact)
+        if floor_range_match:
+            start = int(floor_range_match.group(1))
+            end = int(floor_range_match.group(3))
+            step = 1 if start <= end else -1
+            for value in range(start, end + step, step):
+                result.append(f"{value}층")
+            continue
+        result.append(normalize_floor_label(token))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in result:
+        if item and item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
+
+
+def generate_location_rows(payload: NoticeLocationGenerateRequest) -> list[dict[str, Any]]:
+    buildings = expand_buildings(normalize_text(payload.buildings, "동 범위", 2000, required=True) or "")
+    lines = expand_lines(normalize_text(payload.lines, "라인 목록", 2000, required=True) or "")
+    floors = expand_floors(normalize_text(payload.floors, "층 범위", 4000, required=True))
+    excluded = set(expand_floors(payload.excluded_floors))
+    filtered_floors = [floor for floor in floors if floor not in excluded]
+    if not buildings:
+        raise HTTPException(status_code=400, detail="동 범위를 다시 확인해 주세요.")
+    if not lines:
+        raise HTTPException(status_code=400, detail="라인 목록을 다시 확인해 주세요.")
+    if not filtered_floors:
+        raise HTTPException(status_code=400, detail="생성할 층이 없습니다. 제외층을 다시 확인해 주세요.")
+
+    rows: list[dict[str, Any]] = []
+    sort_order = payload.sort_order_start
+    for building in buildings:
+        for line in lines:
+            for floor in filtered_floors:
+                rows.append(
+                    {
+                        "building": building,
+                        "line": line,
+                        "floor": floor,
+                        "sort_order": sort_order,
+                    }
+                )
+                sort_order += 1
+    return rows
+
+
 @router.on_event("startup")
 def startup_notice_db() -> None:
     init_notice_db()
@@ -398,6 +538,36 @@ def create_notice_location(payload: NoticeLocationRequest):
     return location_option_dict(row)
 
 
+@router.post("/locations/generate")
+def generate_notice_locations(payload: NoticeLocationGenerateRequest):
+    init_notice_db()
+    rows = generate_location_rows(payload)
+    if payload.dry_run:
+        return {
+            "items": rows[:120],
+            "preview_count": len(rows),
+            "truncated": len(rows) > 120,
+        }
+
+    inserted = 0
+    skipped = 0
+    with connect() as con:
+        for row in rows:
+            try:
+                con.execute(
+                    """
+                    INSERT INTO notice_location_options(building, line, floor, sort_order)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (row["building"], row["line"], row["floor"], row["sort_order"]),
+                )
+                inserted += 1
+            except sqlite3.IntegrityError:
+                skipped += 1
+        con.commit()
+    return {"inserted": inserted, "skipped": skipped, "requested": len(rows)}
+
+
 @router.patch("/locations/{location_id}")
 def update_notice_location(location_id: int, payload: NoticeLocationRequest):
     init_notice_db()
@@ -432,6 +602,21 @@ def delete_notice_location(location_id: int):
         con.execute("DELETE FROM notice_location_options WHERE id = ?", (location_id,))
         con.commit()
     return {"deleted": True, "id": location_id}
+
+
+@router.delete("/locations/building/{building}")
+def delete_notice_locations_by_building(building: str):
+    target = normalize_text(building, "동", 80, required=True)
+    with connect() as con:
+        existing = con.execute(
+            "SELECT COUNT(*) AS count FROM notice_location_options WHERE building = ?",
+            (target,),
+        ).fetchone()
+        if not existing or int(existing["count"]) == 0:
+            raise HTTPException(status_code=404, detail="삭제할 동 데이터를 찾을 수 없습니다.")
+        con.execute("DELETE FROM notice_location_options WHERE building = ?", (target,))
+        con.commit()
+    return {"deleted": True, "building": target}
 
 
 @router.get("/summary")
