@@ -12,6 +12,8 @@ type BoardPost = {
   title: string;
   description: string | null;
   location: string;
+  line: string | null;
+  floor: string | null;
   board_name: string | null;
   start_date: string;
   end_date: string;
@@ -43,7 +45,8 @@ type FormState = {
   title: string;
   description: string;
   location: string;
-  board_name: string;
+  line: string;
+  floor: string;
   start_date: string;
   end_date: string;
   removal_due_date: string;
@@ -82,7 +85,8 @@ const blankForm = (): FormState => {
     title: '',
     description: '',
     location: '',
-    board_name: '',
+    line: '',
+    floor: '',
     start_date: today,
     end_date: formatDateInput(end),
     removal_due_date: formatDateInput(removal),
@@ -153,7 +157,8 @@ function formFromNotice(row: BoardPost): FormState {
     title: row.title || '',
     description: row.description || '',
     location: row.location || '',
-    board_name: row.board_name || '',
+    line: row.line || '',
+    floor: row.floor || row.board_name || '',
     start_date: row.start_date || '',
     end_date: row.end_date || '',
     removal_due_date: row.removal_due_date || '',
@@ -215,8 +220,8 @@ export default function NoticeBoardPage() {
 
   async function submitPost(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!form.title.trim() || !form.location.trim()) {
-      setNotice('제목과 위치를 입력해 주세요.');
+    if (!form.title.trim() || !form.location.trim() || !form.line.trim()) {
+      setNotice('제목, 동, 라인을 입력해 주세요.');
       return;
     }
     setLoading(true);
@@ -290,8 +295,8 @@ export default function NoticeBoardPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 px-3 py-4 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl">
+    <main className="min-h-screen overflow-x-hidden bg-slate-100 px-3 py-4 text-slate-950 sm:px-6 lg:px-8">
+      <div className="mx-auto w-full max-w-7xl">
         <header className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -322,8 +327,8 @@ export default function NoticeBoardPage() {
           </div>
         )}
 
-        <section className="mt-4 grid gap-4 lg:grid-cols-[420px_minmax(0,1fr)]">
-          <form onSubmit={submitPost} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <section className="mt-4 grid min-w-0 gap-4 lg:grid-cols-[420px_minmax(0,1fr)]">
+          <form onSubmit={submitPost} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-black">{editingId ? '게시물 수정' : '게시물 등록'}</h2>
@@ -339,7 +344,7 @@ export default function NoticeBoardPage() {
             <div className="mt-4 grid gap-3">
               <label className="grid gap-1 text-sm font-bold">
                 분류
-                <select value={form.category} onChange={event => updateField('category', event.target.value as NoticeCategory)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold">
+                <select value={form.category} onChange={event => updateField('category', event.target.value as NoticeCategory)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold">
                   {CATEGORY_OPTIONS.map(option => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -349,45 +354,49 @@ export default function NoticeBoardPage() {
               </label>
               <label className="grid gap-1 text-sm font-bold">
                 제목
-                <input value={form.title} onChange={event => updateField('title', event.target.value)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="예: 지하주차장 청소 안내" />
+                <input value={form.title} onChange={event => updateField('title', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="예: 지하주차장 청소 안내" />
               </label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <label className="grid gap-1 text-sm font-bold">
-                  위치
-                  <input value={form.location} onChange={event => updateField('location', event.target.value)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="101동 1층" />
+                  동
+                  <input value={form.location} onChange={event => updateField('location', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="101동" />
                 </label>
                 <label className="grid gap-1 text-sm font-bold">
-                  게시판명
-                  <input value={form.board_name} onChange={event => updateField('board_name', event.target.value)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="승강기 앞" />
+                  라인
+                  <input value={form.line} onChange={event => updateField('line', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="1-2라인" />
+                </label>
+                <label className="grid gap-1 text-sm font-bold">
+                  층
+                  <input value={form.floor} onChange={event => updateField('floor', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="1층" />
                 </label>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <label className="grid gap-1 text-xs font-bold">
                   시작
-                  <input type="date" value={form.start_date} onChange={event => updateField('start_date', event.target.value)} className="rounded-xl border border-slate-300 px-2 py-3 font-semibold" />
+                  <input type="date" value={form.start_date} onChange={event => updateField('start_date', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-2 py-3 font-semibold" />
                 </label>
                 <label className="grid gap-1 text-xs font-bold">
                   종료
-                  <input type="date" value={form.end_date} onChange={event => updateField('end_date', event.target.value)} className="rounded-xl border border-slate-300 px-2 py-3 font-semibold" />
+                  <input type="date" value={form.end_date} onChange={event => updateField('end_date', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-2 py-3 font-semibold" />
                 </label>
                 <label className="grid gap-1 text-xs font-bold">
                   철거
-                  <input type="date" value={form.removal_due_date} onChange={event => updateField('removal_due_date', event.target.value)} className="rounded-xl border border-slate-300 px-2 py-3 font-semibold" />
+                  <input type="date" value={form.removal_due_date} onChange={event => updateField('removal_due_date', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-2 py-3 font-semibold" />
                 </label>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="grid gap-1 text-sm font-bold">
                   게시자/업체
-                  <input value={form.advertiser} onChange={event => updateField('advertiser', event.target.value)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="관리사무소 또는 업체" />
+                  <input value={form.advertiser} onChange={event => updateField('advertiser', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="관리사무소 또는 업체" />
                 </label>
                 <label className="grid gap-1 text-sm font-bold">
                   연락처
-                  <input value={form.contact} onChange={event => updateField('contact', event.target.value)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="선택" />
+                  <input value={form.contact} onChange={event => updateField('contact', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="선택" />
                 </label>
               </div>
               <label className="grid gap-1 text-sm font-bold">
                 상태
-                <select value={form.status} onChange={event => updateField('status', event.target.value as NoticeStatus)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold">
+                <select value={form.status} onChange={event => updateField('status', event.target.value as NoticeStatus)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold">
                   {STATUS_OPTIONS.filter(option => option.value).map(option => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -398,16 +407,16 @@ export default function NoticeBoardPage() {
               </label>
               <label className="grid gap-1 text-sm font-bold">
                 내용
-                <textarea value={form.description} onChange={event => updateField('description', event.target.value)} className="min-h-24 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="게시물 내용 또는 철거 기준" />
+                <textarea value={form.description} onChange={event => updateField('description', event.target.value)} className="min-h-24 w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="게시물 내용 또는 철거 기준" />
               </label>
               <label className="grid gap-1 text-sm font-bold">
                 메모
-                <input value={form.note} onChange={event => updateField('note', event.target.value)} className="rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="내부 참고사항" />
+                <input value={form.note} onChange={event => updateField('note', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="내부 참고사항" />
               </label>
               {!editingId && (
                 <label className="grid gap-1 text-sm font-bold">
                   게시 사진
-                  <input type="file" accept="image/*" onChange={event => setImageFile(event.target.files?.[0] || null)} className="rounded-xl border border-slate-300 px-3 py-3 text-sm" />
+                  <input type="file" accept="image/*" onChange={event => setImageFile(event.target.files?.[0] || null)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-sm" />
                 </label>
               )}
               <button disabled={loading} className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:bg-slate-400">
@@ -416,7 +425,7 @@ export default function NoticeBoardPage() {
             </div>
           </form>
 
-          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-black">게시물 목록</h2>
@@ -428,8 +437,8 @@ export default function NoticeBoardPage() {
             </div>
 
             <div className="mt-4 grid gap-2 md:grid-cols-[1fr_150px_150px_90px]">
-              <input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => event.key === 'Enter' && loadPosts().catch(err => setNotice(err instanceof Error ? err.message : '검색 실패'))} className="rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="제목, 위치, 업체, 연락처 검색" />
-              <select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value as NoticeCategory | '')} className="rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold">
+              <input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => event.key === 'Enter' && loadPosts().catch(err => setNotice(err instanceof Error ? err.message : '검색 실패'))} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="제목, 동, 라인, 층, 업체, 연락처 검색" />
+              <select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value as NoticeCategory | '')} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold">
                 <option value="">분류 전체</option>
                 {CATEGORY_OPTIONS.map(option => (
                   <option key={option.value} value={option.value}>
@@ -437,14 +446,14 @@ export default function NoticeBoardPage() {
                   </option>
                 ))}
               </select>
-              <select value={statusFilter} onChange={event => setStatusFilter(event.target.value as NoticeStatus | '')} className="rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold">
+              <select value={statusFilter} onChange={event => setStatusFilter(event.target.value as NoticeStatus | '')} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold">
                 {STATUS_OPTIONS.map(option => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
                 ))}
               </select>
-              <button onClick={() => loadPosts().catch(err => setNotice(err instanceof Error ? err.message : '검색 실패'))} className="rounded-xl bg-slate-900 px-3 py-3 text-sm font-black text-white">
+              <button onClick={() => loadPosts().catch(err => setNotice(err instanceof Error ? err.message : '검색 실패'))} className="w-full min-w-0 rounded-xl bg-slate-900 px-3 py-3 text-sm font-black text-white">
                 조회
               </button>
             </div>
@@ -476,7 +485,7 @@ export default function NoticeBoardPage() {
                       </div>
                       <h3 className="mt-2 break-words text-lg font-black text-slate-950">{post.title}</h3>
                       <div className="mt-2 grid gap-1 text-sm font-semibold text-slate-600 sm:grid-cols-2">
-                        <div>위치: {post.location}{post.board_name ? ` / ${post.board_name}` : ''}</div>
+                        <div>위치: {post.location}{post.line ? ` / ${post.line}` : ''}{post.floor ? ` / ${post.floor}` : ''}</div>
                         <div>기간: {post.start_date} ~ {post.end_date}</div>
                         <div>철거 예정: {post.removal_due_date || post.end_date}</div>
                         <div>게시자: {post.advertiser || '-'}</div>
@@ -490,9 +499,9 @@ export default function NoticeBoardPage() {
                       )}
 
                       <div className="mt-3 grid gap-2 md:grid-cols-[1fr_180px_auto]">
-                        <input value={removalNotes[post.id] || ''} onChange={event => setRemovalNotes(current => ({ ...current, [post.id]: event.target.value }))} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="철거 메모" />
-                        <input type="file" accept="image/*" onChange={event => setRemovalFiles(current => ({ ...current, [post.id]: event.target.files?.[0] || null }))} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs" />
-                        <button onClick={() => removePost(post)} disabled={loading || post.computed_status === 'removed'} className="rounded-xl bg-emerald-800 px-3 py-2 text-sm font-black text-white disabled:bg-slate-300">
+                        <input value={removalNotes[post.id] || ''} onChange={event => setRemovalNotes(current => ({ ...current, [post.id]: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="철거 메모" />
+                        <input type="file" accept="image/*" onChange={event => setRemovalFiles(current => ({ ...current, [post.id]: event.target.files?.[0] || null }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs" />
+                        <button onClick={() => removePost(post)} disabled={loading || post.computed_status === 'removed'} className="w-full min-w-0 rounded-xl bg-emerald-800 px-3 py-2 text-sm font-black text-white disabled:bg-slate-300">
                           철거 완료
                         </button>
                       </div>

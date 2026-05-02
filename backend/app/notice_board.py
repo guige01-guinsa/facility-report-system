@@ -59,6 +59,8 @@ class NoticeUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     location: str | None = None
+    line: str | None = None
+    floor: str | None = None
     board_name: str | None = None
     start_date: str | None = None
     end_date: str | None = None
@@ -83,6 +85,11 @@ def connect() -> sqlite3.Connection:
     return con
 
 
+def table_columns(con: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = con.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
 def init_notice_db() -> None:
     with connect() as con:
         con.execute(
@@ -94,6 +101,8 @@ def init_notice_db() -> None:
               title TEXT NOT NULL,
               description TEXT,
               location TEXT NOT NULL,
+              line TEXT,
+              floor TEXT,
               board_name TEXT,
               start_date TEXT NOT NULL,
               end_date TEXT NOT NULL,
@@ -113,6 +122,28 @@ def init_notice_db() -> None:
             )
             """
         )
+        columns = table_columns(con, "board_posts")
+
+        def add_column(name: str, definition: str) -> None:
+            if name not in columns:
+                con.execute(f"ALTER TABLE board_posts ADD COLUMN {name} {definition}")
+                columns.add(name)
+
+        add_column("site_code", "TEXT NOT NULL DEFAULT 'APT1100'")
+        add_column("line", "TEXT")
+        add_column("floor", "TEXT")
+        add_column("board_name", "TEXT")
+        add_column("removal_due_date", "TEXT")
+        add_column("advertiser", "TEXT")
+        add_column("contact", "TEXT")
+        add_column("note", "TEXT")
+        add_column("image_url", "TEXT")
+        add_column("removal_image_url", "TEXT")
+        add_column("removal_note", "TEXT")
+        add_column("created_by", "TEXT")
+        add_column("removed_by", "TEXT")
+        add_column("removed_at", "TEXT")
+        con.execute("UPDATE board_posts SET floor = COALESCE(NULLIF(floor, ''), board_name) WHERE floor IS NULL OR floor = ''")
         con.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_board_posts_site_status_end
@@ -122,7 +153,7 @@ def init_notice_db() -> None:
         con.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_board_posts_site_category_location
-            ON board_posts(site_code, category, location)
+            ON board_posts(site_code, category, location, line, floor)
             """
         )
         con.commit()
@@ -212,6 +243,7 @@ def computed_status(row: dict[str, Any], today: date | None = None) -> str:
 
 def notice_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
+    data["floor"] = data.get("floor") or data.get("board_name")
     status = computed_status(data)
     data["computed_status"] = status
     data["status_label"] = NOTICE_STATUSES.get(status, status)
@@ -281,13 +313,15 @@ def list_notices(
               title LIKE ?
               OR COALESCE(description, '') LIKE ?
               OR location LIKE ?
+              OR COALESCE(line, '') LIKE ?
+              OR COALESCE(floor, '') LIKE ?
               OR COALESCE(board_name, '') LIKE ?
               OR COALESCE(advertiser, '') LIKE ?
               OR COALESCE(contact, '') LIKE ?
             )
             """
         )
-        params.extend([like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like, like])
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     params.extend([limit, offset])
     with connect() as con:
@@ -317,6 +351,8 @@ async def create_notice(
     title: str = Form(...),
     description: str | None = Form(None),
     location: str = Form(...),
+    line: str | None = Form(None),
+    floor: str | None = Form(None),
     board_name: str | None = Form(None),
     start_date: str = Form(...),
     end_date: str = Form(...),
@@ -330,7 +366,9 @@ async def create_notice(
     init_notice_db()
     normalized_category = normalize_category(category)
     normalized_title = normalize_text(title, "제목", 120, required=True)
-    normalized_location = normalize_text(location, "위치", 120, required=True)
+    normalized_location = normalize_text(location, "동", 120, required=True)
+    normalized_line = normalize_text(line, "라인", 80, required=True)
+    normalized_floor = normalize_text(floor or board_name, "층", 80)
     normalized_start = normalize_date_value(start_date, "게시 시작일", required=True)
     normalized_end = normalize_date_value(end_date, "게시 종료일", required=True)
     normalized_removal_due = normalize_date_value(removal_due_date, "철거 예정일")
@@ -340,16 +378,18 @@ async def create_notice(
         cur = con.execute(
             """
             INSERT INTO board_posts
-            (category, title, description, location, board_name, start_date, end_date, removal_due_date,
+            (category, title, description, location, line, floor, board_name, start_date, end_date, removal_due_date,
              advertiser, contact, status, note, image_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized_category,
                 normalized_title,
                 normalize_text(description, "내용", 1000),
                 normalized_location,
-                normalize_text(board_name, "게시판명", 80),
+                normalized_line,
+                normalized_floor,
+                normalized_floor,
                 normalized_start,
                 normalized_end,
                 normalized_removal_due,
@@ -386,8 +426,10 @@ def update_notice(notice_id: int, payload: NoticeUpdateRequest):
             "category": normalize_category(values.get("category")),
             "title": normalize_text(values.get("title"), "제목", 120, required=True),
             "description": normalize_text(values.get("description"), "내용", 1000),
-            "location": normalize_text(values.get("location"), "위치", 120, required=True),
-            "board_name": normalize_text(values.get("board_name"), "게시판명", 80),
+            "location": normalize_text(values.get("location"), "동", 120, required=True),
+            "line": normalize_text(values.get("line"), "라인", 80, required=True),
+            "floor": normalize_text(values.get("floor") or values.get("board_name"), "층", 80),
+            "board_name": normalize_text(values.get("floor") or values.get("board_name"), "층", 80),
             "start_date": normalized_start,
             "end_date": normalized_end,
             "removal_due_date": normalized_removal_due,
@@ -399,7 +441,7 @@ def update_notice(notice_id: int, payload: NoticeUpdateRequest):
         con.execute(
             """
             UPDATE board_posts
-            SET category = ?, title = ?, description = ?, location = ?, board_name = ?,
+            SET category = ?, title = ?, description = ?, location = ?, line = ?, floor = ?, board_name = ?,
                 start_date = ?, end_date = ?, removal_due_date = ?, advertiser = ?, contact = ?,
                 status = ?, note = ?, updated_at = datetime('now')
             WHERE id = ?
