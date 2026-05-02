@@ -25,10 +25,21 @@ type BoardPost = {
   status_label: string;
   note: string | null;
   image_url: string | null;
+  attachment_url: string | null;
+  attachment_filename: string | null;
+  attachment_content_type: string | null;
   removal_image_url: string | null;
   removal_note: string | null;
   removed_at: string | null;
   created_at: string;
+};
+
+type LocationOption = {
+  id: number;
+  building: string;
+  line: string;
+  floor: string;
+  sort_order: number;
 };
 
 type Summary = {
@@ -38,6 +49,13 @@ type Summary = {
   expired: number;
   scheduled: number;
   unauthorized: number;
+};
+
+type LocationFormState = {
+  building: string;
+  line: string;
+  floor: string;
+  sort_order: string;
 };
 
 type FormState = {
@@ -74,6 +92,8 @@ const STATUS_OPTIONS: { value: NoticeStatus | ''; label: string }[] = [
   { value: 'unauthorized', label: '무단 게시' },
 ];
 
+const ATTACHMENT_ACCEPT = 'image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.hwp,.hwpx,.txt';
+
 const blankForm = (): FormState => {
   const today = formatDateInput(new Date());
   const end = new Date();
@@ -96,6 +116,13 @@ const blankForm = (): FormState => {
     note: '',
   };
 };
+
+const blankLocationForm = (): LocationFormState => ({
+  building: '',
+  line: '',
+  floor: '',
+  sort_order: '0',
+});
 
 function getApiBase() {
   const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE?.trim();
@@ -126,6 +153,21 @@ function imageSrc(path: string | null) {
   if (!path) return '';
   if (path.startsWith('http')) return path;
   return `${getApiBase()}${path}`;
+}
+
+function isImageFile(post: BoardPost) {
+  const contentType = post.attachment_content_type || '';
+  return Boolean(post.image_url || contentType.startsWith('image/'));
+}
+
+function isPdfFile(post: BoardPost) {
+  const contentType = post.attachment_content_type || '';
+  const filename = post.attachment_filename || post.attachment_url || '';
+  return contentType.includes('pdf') || filename.toLowerCase().endsWith('.pdf');
+}
+
+function fileLabel(post: BoardPost) {
+  return post.attachment_filename || (post.attachment_url ? post.attachment_url.split('/').pop() : '') || '게시파일';
 }
 
 async function responseMessage(res: Response) {
@@ -171,9 +213,11 @@ function formFromNotice(row: BoardPost): FormState {
 
 export default function NoticeBoardPage() {
   const [posts, setPosts] = useState<BoardPost[]>([]);
+  const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
+  const [locationForm, setLocationForm] = useState<LocationFormState>(() => blankLocationForm());
   const [summary, setSummary] = useState<Summary | null>(null);
   const [form, setForm] = useState<FormState>(() => blankForm());
-  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<NoticeCategory | ''>('');
@@ -186,6 +230,15 @@ export default function NoticeBoardPage() {
   const actionPosts = useMemo(
     () => posts.filter(post => post.computed_status === 'removal_due' || post.computed_status === 'expired' || post.computed_status === 'unauthorized'),
     [posts],
+  );
+  const buildingOptions = useMemo(() => Array.from(new Set(locationOptions.map(option => option.building))).sort(), [locationOptions]);
+  const lineOptions = useMemo(
+    () => Array.from(new Set(locationOptions.filter(option => option.building === form.location).map(option => option.line))).sort(),
+    [form.location, locationOptions],
+  );
+  const floorOptions = useMemo(
+    () => Array.from(new Set(locationOptions.filter(option => option.building === form.location && option.line === form.line).map(option => option.floor))).sort(),
+    [form.line, form.location, locationOptions],
   );
 
   async function loadPosts() {
@@ -203,8 +256,15 @@ export default function NoticeBoardPage() {
     setSummary(await summaryRes.json());
   }
 
+  async function loadLocations() {
+    const res = await fetch(`${getApiBase()}/api/notices/locations`);
+    if (!res.ok) throw new Error(await responseMessage(res));
+    const data = await res.json();
+    setLocationOptions(Array.isArray(data.items) ? data.items : []);
+  }
+
   useEffect(() => {
-    loadPosts().catch(err => setNotice(err instanceof Error ? err.message : '게시물을 불러오지 못했습니다.'));
+    Promise.all([loadPosts(), loadLocations()]).catch(err => setNotice(err instanceof Error ? err.message : '게시물을 불러오지 못했습니다.'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -214,8 +274,54 @@ export default function NoticeBoardPage() {
 
   function resetForm() {
     setForm(blankForm());
-    setImageFile(null);
+    setAttachmentFile(null);
     setEditingId(null);
+  }
+
+  function updateBuilding(value: string) {
+    setForm(current => ({ ...current, location: value, line: '', floor: '' }));
+  }
+
+  function updateLine(value: string) {
+    setForm(current => ({ ...current, line: value, floor: '' }));
+  }
+
+  async function saveLocationOption() {
+    if (!locationForm.building.trim() || !locationForm.line.trim() || !locationForm.floor.trim()) {
+      setNotice('동, 라인, 층을 모두 입력해 주세요.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${getApiBase()}/api/notices/locations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...locationForm, sort_order: Number(locationForm.sort_order || 0) }),
+      });
+      if (!res.ok) throw new Error(await responseMessage(res));
+      setLocationForm(blankLocationForm());
+      await loadLocations();
+      setNotice('위치 옵션을 등록했습니다.');
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '위치 옵션 저장 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteLocationOption(option: LocationOption) {
+    if (!confirm(`${option.building} / ${option.line} / ${option.floor} 위치 옵션을 삭제하시겠습니까?`)) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${getApiBase()}/api/notices/locations/${option.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await responseMessage(res));
+      await loadLocations();
+      setNotice('위치 옵션을 삭제했습니다.');
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '위치 옵션 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function submitPost(event: FormEvent<HTMLFormElement>) {
@@ -237,7 +343,7 @@ export default function NoticeBoardPage() {
       } else {
         const body = new FormData();
         Object.entries(form).forEach(([key, value]) => body.append(key, String(value || '')));
-        if (imageFile) body.append('image', imageFile);
+        if (attachmentFile) body.append('attachment', attachmentFile);
         const res = await fetch(`${getApiBase()}/api/notices`, { method: 'POST', body });
         if (!res.ok) throw new Error(await responseMessage(res));
       }
@@ -290,7 +396,7 @@ export default function NoticeBoardPage() {
   function startEdit(post: BoardPost) {
     setEditingId(post.id);
     setForm(formFromNotice(post));
-    setImageFile(null);
+    setAttachmentFile(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -332,7 +438,7 @@ export default function NoticeBoardPage() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-black">{editingId ? '게시물 수정' : '게시물 등록'}</h2>
-                <p className="mt-1 text-xs font-semibold text-slate-500">사진은 등록 시 첨부하고, 내용 수정은 카드의 수정 버튼을 사용합니다.</p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">게시파일은 등록 시 첨부하고, 내용 수정은 카드의 수정 버튼을 사용합니다.</p>
               </div>
               {editingId && (
                 <button type="button" onClick={resetForm} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700">
@@ -359,17 +465,46 @@ export default function NoticeBoardPage() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <label className="grid gap-1 text-sm font-bold">
                   동
-                  <input value={form.location} onChange={event => updateField('location', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="101동" />
+                  <select value={form.location} onChange={event => updateBuilding(event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold">
+                    <option value="">동 선택</option>
+                    {form.location && !buildingOptions.includes(form.location) && <option value={form.location}>{form.location}</option>}
+                    {buildingOptions.map(building => (
+                      <option key={building} value={building}>
+                        {building}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="grid gap-1 text-sm font-bold">
                   라인
-                  <input value={form.line} onChange={event => updateField('line', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="1-2라인" />
+                  <select value={form.line} onChange={event => updateLine(event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" disabled={!form.location}>
+                    <option value="">라인 선택</option>
+                    {form.line && !lineOptions.includes(form.line) && <option value={form.line}>{form.line}</option>}
+                    {lineOptions.map(line => (
+                      <option key={line} value={line}>
+                        {line}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="grid gap-1 text-sm font-bold">
                   층
-                  <input value={form.floor} onChange={event => updateField('floor', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" placeholder="1층" />
+                  <select value={form.floor} onChange={event => updateField('floor', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold" disabled={!form.line}>
+                    <option value="">층 선택</option>
+                    {form.floor && !floorOptions.includes(form.floor) && <option value={form.floor}>{form.floor}</option>}
+                    {floorOptions.map(floor => (
+                      <option key={floor} value={floor}>
+                        {floor}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
+              {locationOptions.length === 0 && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-950">
+                  먼저 아래 위치 관리에서 동/라인/층을 등록하세요.
+                </div>
+              )}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <label className="grid gap-1 text-xs font-bold">
                   시작
@@ -415,14 +550,42 @@ export default function NoticeBoardPage() {
               </label>
               {!editingId && (
                 <label className="grid gap-1 text-sm font-bold">
-                  게시 사진
-                  <input type="file" accept="image/*" onChange={event => setImageFile(event.target.files?.[0] || null)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-sm" />
+                  게시파일
+                  <input type="file" accept={ATTACHMENT_ACCEPT} onChange={event => setAttachmentFile(event.target.files?.[0] || null)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-sm" />
                 </label>
               )}
               <button disabled={loading} className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:bg-slate-400">
                 {loading ? '처리 중...' : editingId ? '수정 저장' : '게시물 등록'}
               </button>
             </div>
+
+            <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <summary className="cursor-pointer text-sm font-black text-slate-900">위치 관리</summary>
+              <div className="mt-3 grid gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                  <input value={locationForm.building} onChange={event => setLocationForm(current => ({ ...current, building: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="동 예: 101동" />
+                  <input value={locationForm.line} onChange={event => setLocationForm(current => ({ ...current, line: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="라인 예: 1-2라인" />
+                  <input value={locationForm.floor} onChange={event => setLocationForm(current => ({ ...current, floor: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="층 예: 1층" />
+                  <input value={locationForm.sort_order} onChange={event => setLocationForm(current => ({ ...current, sort_order: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold" placeholder="순서" inputMode="numeric" />
+                </div>
+                <button type="button" onClick={saveLocationOption} disabled={loading} className="rounded-xl bg-emerald-800 px-3 py-2 text-sm font-black text-white disabled:bg-slate-300">
+                  위치 등록
+                </button>
+              </div>
+              <div className="mt-3 grid max-h-56 gap-2 overflow-y-auto pr-1">
+                {locationOptions.map(option => (
+                  <div key={option.id} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <span className="min-w-0 break-words text-xs font-bold text-slate-700">
+                      {option.building} / {option.line} / {option.floor}
+                    </span>
+                    <button type="button" onClick={() => deleteLocationOption(option)} className="shrink-0 rounded-lg border border-rose-300 px-2 py-1 text-xs font-bold text-rose-700">
+                      삭제
+                    </button>
+                  </div>
+                ))}
+                {locationOptions.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">등록된 위치 옵션이 없습니다.</div>}
+              </div>
+            </details>
           </form>
 
           <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -469,10 +632,14 @@ export default function NoticeBoardPage() {
                 <article key={post.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
                   <div className="grid gap-3 p-3 sm:grid-cols-[160px_minmax(0,1fr)]">
                     <div className="aspect-[4/3] overflow-hidden rounded-xl bg-slate-200">
-                      {post.image_url ? (
-                        <img src={imageSrc(post.image_url)} alt={post.title} className="h-full w-full object-cover" />
+                      {post.attachment_url && isImageFile(post) ? (
+                        <img src={imageSrc(post.attachment_url)} alt={post.title} className="h-full w-full object-cover" />
+                      ) : post.attachment_url && isPdfFile(post) ? (
+                        <iframe src={imageSrc(post.attachment_url)} title={post.title} className="h-full w-full border-0 bg-white" />
                       ) : (
-                        <div className="flex h-full items-center justify-center text-xs font-bold text-slate-500">사진 없음</div>
+                        <div className="flex h-full items-center justify-center px-3 text-center text-xs font-bold text-slate-500">
+                          {post.attachment_url ? fileLabel(post) : '파일 없음'}
+                        </div>
                       )}
                     </div>
                     <div className="min-w-0">
@@ -492,6 +659,17 @@ export default function NoticeBoardPage() {
                       </div>
                       {post.description && <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{post.description}</p>}
                       {post.note && <p className="mt-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-600">메모: {post.note}</p>}
+                      {post.attachment_url && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+                          <span className="min-w-0 break-words">게시파일: {fileLabel(post)}</span>
+                          <a href={imageSrc(post.attachment_url)} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-bold text-slate-700">
+                            원본 보기
+                          </a>
+                          <a href={imageSrc(post.attachment_url)} download className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-bold text-slate-700">
+                            다운로드
+                          </a>
+                        </div>
+                      )}
                       {post.removal_image_url && (
                         <div className="mt-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-600">
                           철거 완료: {post.removed_at || '-'} / {post.removal_note || '메모 없음'}

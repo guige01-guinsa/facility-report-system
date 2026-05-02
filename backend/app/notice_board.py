@@ -16,7 +16,9 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("NOTICE_BOARD_DB_PATH", str(BASE_DIR / "data" / "notice_board.db")))
 UPLOAD_DIR = Path(os.getenv("NOTICE_BOARD_UPLOAD_DIR", str(BASE_DIR / "uploads")))
 MAX_IMAGE_BYTES = int(os.getenv("NOTICE_BOARD_MAX_IMAGE_MB", "8")) * 1024 * 1024
+MAX_ATTACHMENT_BYTES = int(os.getenv("NOTICE_BOARD_MAX_ATTACHMENT_MB", "20")) * 1024 * 1024
 ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+ALLOWED_ATTACHMENT_SUFFIXES = ALLOWED_IMAGE_SUFFIXES | {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".hwp", ".hwpx", ".txt"}
 
 router = APIRouter(prefix="/api/notices", tags=["notice-board"])
 
@@ -71,6 +73,13 @@ class NoticeUpdateRequest(BaseModel):
     note: str | None = None
 
 
+class NoticeLocationRequest(BaseModel):
+    building: str
+    line: str
+    floor: str
+    sort_order: int = Field(0, ge=0, le=9999)
+
+
 class RemovalRequest(BaseModel):
     removal_note: str | None = Field(None, max_length=500)
 
@@ -112,6 +121,9 @@ def init_notice_db() -> None:
               status TEXT NOT NULL DEFAULT 'posted',
               note TEXT,
               image_url TEXT,
+              attachment_url TEXT,
+              attachment_filename TEXT,
+              attachment_content_type TEXT,
               removal_image_url TEXT,
               removal_note TEXT,
               created_by TEXT,
@@ -138,12 +150,16 @@ def init_notice_db() -> None:
         add_column("contact", "TEXT")
         add_column("note", "TEXT")
         add_column("image_url", "TEXT")
+        add_column("attachment_url", "TEXT")
+        add_column("attachment_filename", "TEXT")
+        add_column("attachment_content_type", "TEXT")
         add_column("removal_image_url", "TEXT")
         add_column("removal_note", "TEXT")
         add_column("created_by", "TEXT")
         add_column("removed_by", "TEXT")
         add_column("removed_at", "TEXT")
         con.execute("UPDATE board_posts SET floor = COALESCE(NULLIF(floor, ''), board_name) WHERE floor IS NULL OR floor = ''")
+        con.execute("UPDATE board_posts SET attachment_url = image_url WHERE (attachment_url IS NULL OR attachment_url = '') AND image_url IS NOT NULL")
         con.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_board_posts_site_status_end
@@ -154,6 +170,32 @@ def init_notice_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_board_posts_site_category_location
             ON board_posts(site_code, category, location, line, floor)
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notice_location_options (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              site_code TEXT NOT NULL DEFAULT 'APT1100',
+              building TEXT NOT NULL,
+              line TEXT NOT NULL,
+              floor TEXT NOT NULL,
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_notice_locations_unique
+            ON notice_location_options(site_code, building, line, floor)
+            """
+        )
+        con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_notice_locations_order
+            ON notice_location_options(site_code, sort_order, building, line, floor)
             """
         )
         con.commit()
@@ -224,6 +266,30 @@ async def save_notice_image(image: UploadFile | None, folder: str) -> str | None
     return f"/uploads/{folder}/{filename}"
 
 
+async def save_notice_attachment(file: UploadFile | None) -> dict[str, str] | None:
+    if not file or not file.filename:
+        return None
+    payload = await file.read()
+    if not payload:
+        return None
+    if len(payload) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="게시파일은 20MB 이하만 업로드할 수 있습니다.")
+    suffix = Path(file.filename).suffix.lower() or ".bin"
+    if suffix not in ALLOWED_ATTACHMENT_SUFFIXES:
+        raise HTTPException(status_code=400, detail="게시파일은 이미지, PDF, Word, Excel, PPT, HWP, TXT 형식만 사용할 수 있습니다.")
+    target_dir = UPLOAD_DIR / "notices"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    (target_dir / stored_name).write_bytes(payload)
+    content_type = file.content_type or "application/octet-stream"
+    return {
+        "url": f"/uploads/notices/{stored_name}",
+        "filename": Path(file.filename).name,
+        "content_type": content_type,
+        "is_image": "1" if suffix in ALLOWED_IMAGE_SUFFIXES or content_type.startswith("image/") else "0",
+    }
+
+
 def computed_status(row: dict[str, Any], today: date | None = None) -> str:
     current = today or date.today()
     status = row.get("status") or "posted"
@@ -244,6 +310,10 @@ def computed_status(row: dict[str, Any], today: date | None = None) -> str:
 def notice_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     data["floor"] = data.get("floor") or data.get("board_name")
+    data["attachment_url"] = data.get("attachment_url") or data.get("image_url")
+    if data["attachment_url"] and not data.get("attachment_filename"):
+        data["attachment_filename"] = Path(str(data["attachment_url"])).name
+    data["attachment_content_type"] = data.get("attachment_content_type") or ("image/*" if data.get("image_url") else None)
     status = computed_status(data)
     data["computed_status"] = status
     data["status_label"] = NOTICE_STATUSES.get(status, status)
@@ -258,6 +328,31 @@ def require_notice(con: sqlite3.Connection, notice_id: int) -> dict[str, Any]:
     return dict(row)
 
 
+def location_option_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return dict(row)
+
+
+def build_location_tree(rows: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
+    tree: dict[str, dict[str, list[str]]] = {}
+    for row in rows:
+        building = row["building"]
+        line = row["line"]
+        floor = row["floor"]
+        tree.setdefault(building, {}).setdefault(line, [])
+        if floor not in tree[building][line]:
+            tree[building][line].append(floor)
+    return tree
+
+
+def normalize_location_payload(payload: NoticeLocationRequest) -> dict[str, Any]:
+    return {
+        "building": normalize_text(payload.building, "동", 80, required=True),
+        "line": normalize_text(payload.line, "라인", 80, required=True),
+        "floor": normalize_text(payload.floor, "층", 80, required=True),
+        "sort_order": payload.sort_order,
+    }
+
+
 @router.on_event("startup")
 def startup_notice_db() -> None:
     init_notice_db()
@@ -266,6 +361,77 @@ def startup_notice_db() -> None:
 @router.get("/meta")
 def notice_meta():
     return {"categories": NOTICE_CATEGORIES, "statuses": NOTICE_STATUSES}
+
+
+@router.get("/locations")
+def list_notice_locations():
+    init_notice_db()
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT *
+            FROM notice_location_options
+            ORDER BY sort_order, building, line, floor, id
+            """
+        ).fetchall()
+    items = [location_option_dict(row) for row in rows]
+    return {"items": items, "tree": build_location_tree(items)}
+
+
+@router.post("/locations")
+def create_notice_location(payload: NoticeLocationRequest):
+    init_notice_db()
+    values = normalize_location_payload(payload)
+    with connect() as con:
+        try:
+            cur = con.execute(
+                """
+                INSERT INTO notice_location_options(building, line, floor, sort_order)
+                VALUES (?, ?, ?, ?)
+                """,
+                (values["building"], values["line"], values["floor"], values["sort_order"]),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="이미 등록된 동/라인/층입니다.")
+        row = con.execute("SELECT * FROM notice_location_options WHERE id = ?", (cur.lastrowid,)).fetchone()
+        con.commit()
+    return location_option_dict(row)
+
+
+@router.patch("/locations/{location_id}")
+def update_notice_location(location_id: int, payload: NoticeLocationRequest):
+    init_notice_db()
+    values = normalize_location_payload(payload)
+    with connect() as con:
+        existing = con.execute("SELECT * FROM notice_location_options WHERE id = ?", (location_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="위치 옵션을 찾을 수 없습니다.")
+        try:
+            con.execute(
+                """
+                UPDATE notice_location_options
+                SET building = ?, line = ?, floor = ?, sort_order = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (values["building"], values["line"], values["floor"], values["sort_order"], location_id),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="이미 등록된 동/라인/층입니다.")
+        row = con.execute("SELECT * FROM notice_location_options WHERE id = ?", (location_id,)).fetchone()
+        con.commit()
+    return location_option_dict(row)
+
+
+@router.delete("/locations/{location_id}")
+def delete_notice_location(location_id: int):
+    init_notice_db()
+    with connect() as con:
+        existing = con.execute("SELECT * FROM notice_location_options WHERE id = ?", (location_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="위치 옵션을 찾을 수 없습니다.")
+        con.execute("DELETE FROM notice_location_options WHERE id = ?", (location_id,))
+        con.commit()
+    return {"deleted": True, "id": location_id}
 
 
 @router.get("/summary")
@@ -316,12 +482,13 @@ def list_notices(
               OR COALESCE(line, '') LIKE ?
               OR COALESCE(floor, '') LIKE ?
               OR COALESCE(board_name, '') LIKE ?
+              OR COALESCE(attachment_filename, '') LIKE ?
               OR COALESCE(advertiser, '') LIKE ?
               OR COALESCE(contact, '') LIKE ?
             )
             """
         )
-        params.extend([like, like, like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like, like, like])
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     params.extend([limit, offset])
     with connect() as con:
@@ -362,6 +529,7 @@ async def create_notice(
     status: str | None = Form("posted"),
     note: str | None = Form(None),
     image: UploadFile | None = File(None),
+    attachment: UploadFile | None = File(None),
 ):
     init_notice_db()
     normalized_category = normalize_category(category)
@@ -373,14 +541,16 @@ async def create_notice(
     normalized_end = normalize_date_value(end_date, "게시 종료일", required=True)
     normalized_removal_due = normalize_date_value(removal_due_date, "철거 예정일")
     validate_period(normalized_start, normalized_end, normalized_removal_due)
-    image_url = await save_notice_image(image, "notices")
+    attachment_file = await save_notice_attachment(attachment or image)
+    attachment_url = attachment_file["url"] if attachment_file else None
+    image_url = attachment_url if attachment_file and attachment_file["is_image"] == "1" else None
     with connect() as con:
         cur = con.execute(
             """
             INSERT INTO board_posts
             (category, title, description, location, line, floor, board_name, start_date, end_date, removal_due_date,
-             advertiser, contact, status, note, image_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             advertiser, contact, status, note, image_url, attachment_url, attachment_filename, attachment_content_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized_category,
@@ -398,6 +568,9 @@ async def create_notice(
                 normalize_status(status),
                 normalize_text(note, "메모", 500),
                 image_url,
+                attachment_url,
+                attachment_file["filename"] if attachment_file else None,
+                attachment_file["content_type"] if attachment_file else None,
             ),
         )
         row = con.execute("SELECT * FROM board_posts WHERE id = ?", (cur.lastrowid,)).fetchone()

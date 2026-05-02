@@ -24,6 +24,16 @@ class NoticeBoardTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_notice_crud_and_remove_flow(self):
+        location = self.client.post(
+            "/api/notices/locations",
+            json={"building": "101동", "line": "1-2라인", "floor": "1층", "sort_order": 1},
+        )
+        self.assertEqual(location.status_code, 200)
+
+        locations = self.client.get("/api/notices/locations")
+        self.assertEqual(locations.status_code, 200)
+        self.assertEqual(locations.json()["tree"]["101동"]["1-2라인"], ["1층"])
+
         created = self.client.post(
             "/api/notices",
             data={
@@ -73,6 +83,28 @@ class NoticeBoardTests(unittest.TestCase):
         deleted = self.client.delete(f"/api/notices/{notice_id}")
         self.assertEqual(deleted.status_code, 200)
         self.assertTrue(deleted.json()["deleted"])
+
+    def test_notice_accepts_pdf_attachment(self):
+        created = self.client.post(
+            "/api/notices",
+            data={
+                "category": "notice",
+                "title": "PDF 게시물",
+                "location": "102동",
+                "line": "1라인",
+                "floor": "2층",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-10",
+            },
+            files={"attachment": ("notice.pdf", b"%PDF-1.4\n", "application/pdf")},
+        )
+
+        self.assertEqual(created.status_code, 200)
+        body = created.json()
+        self.assertEqual(body["attachment_filename"], "notice.pdf")
+        self.assertEqual(body["attachment_content_type"], "application/pdf")
+        self.assertTrue(body["attachment_url"].endswith(".pdf"))
+        self.assertIsNone(body["image_url"])
 
     def test_rejects_invalid_period(self):
         response = self.client.post(
