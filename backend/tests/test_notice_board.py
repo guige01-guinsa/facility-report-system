@@ -84,6 +84,33 @@ class NoticeBoardTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertTrue(deleted.json()["deleted"])
 
+    def test_specific_location_option_and_notice_usage(self):
+        option = self.client.post(
+            "/api/notices/specific-locations",
+            json={"name": "승강기 앞", "sort_order": 1},
+        )
+        self.assertEqual(option.status_code, 200)
+
+        listed = self.client.get("/api/notices/specific-locations")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["items"][0]["name"], "승강기 앞")
+
+        created = self.client.post(
+            "/api/notices",
+            data={
+                "category": "notice",
+                "title": "특정위치 테스트",
+                "location": "101동",
+                "line": "1라인",
+                "floor": "1층",
+                "specific_location": "승강기 앞",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-10",
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["specific_location"], "승강기 앞")
+
     def test_notice_accepts_pdf_attachment(self):
         created = self.client.post(
             "/api/notices",

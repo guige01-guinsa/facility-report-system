@@ -64,6 +64,7 @@ class NoticeUpdateRequest(BaseModel):
     location: str | None = None
     line: str | None = None
     floor: str | None = None
+    specific_location: str | None = None
     board_name: str | None = None
     start_date: str | None = None
     end_date: str | None = None
@@ -78,6 +79,11 @@ class NoticeLocationRequest(BaseModel):
     building: str
     line: str
     floor: str
+    sort_order: int = Field(0, ge=0, le=9999)
+
+
+class NoticeSpecificLocationRequest(BaseModel):
+    name: str
     sort_order: int = Field(0, ge=0, le=9999)
 
 
@@ -122,6 +128,7 @@ def init_notice_db() -> None:
               location TEXT NOT NULL,
               line TEXT,
               floor TEXT,
+              specific_location TEXT,
               board_name TEXT,
               start_date TEXT NOT NULL,
               end_date TEXT NOT NULL,
@@ -154,6 +161,7 @@ def init_notice_db() -> None:
         add_column("site_code", "TEXT NOT NULL DEFAULT 'APT1100'")
         add_column("line", "TEXT")
         add_column("floor", "TEXT")
+        add_column("specific_location", "TEXT")
         add_column("board_name", "TEXT")
         add_column("removal_due_date", "TEXT")
         add_column("advertiser", "TEXT")
@@ -179,7 +187,7 @@ def init_notice_db() -> None:
         con.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_board_posts_site_category_location
-            ON board_posts(site_code, category, location, line, floor)
+            ON board_posts(site_code, category, location, line, floor, specific_location)
             """
         )
         con.execute(
@@ -206,6 +214,30 @@ def init_notice_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_notice_locations_order
             ON notice_location_options(site_code, sort_order, building, line, floor)
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notice_specific_location_options (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              site_code TEXT NOT NULL DEFAULT 'APT1100',
+              name TEXT NOT NULL,
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_notice_specific_locations_unique
+            ON notice_specific_location_options(site_code, name)
+            """
+        )
+        con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_notice_specific_locations_order
+            ON notice_specific_location_options(site_code, sort_order, name)
             """
         )
         con.commit()
@@ -340,6 +372,17 @@ def require_notice(con: sqlite3.Connection, notice_id: int) -> dict[str, Any]:
 
 def location_option_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return dict(row)
+
+
+def specific_location_option_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return dict(row)
+
+
+def normalize_specific_location_payload(payload: NoticeSpecificLocationRequest) -> dict[str, Any]:
+    return {
+        "name": normalize_text(payload.name, "특정위치", 120, required=True),
+        "sort_order": payload.sort_order,
+    }
 
 
 def build_location_tree(rows: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
@@ -538,6 +581,52 @@ def notice_meta():
     return {"categories": NOTICE_CATEGORIES, "statuses": NOTICE_STATUSES}
 
 
+@router.get("/specific-locations")
+def list_notice_specific_locations():
+    init_notice_db()
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT *
+            FROM notice_specific_location_options
+            ORDER BY sort_order, name, id
+            """
+        ).fetchall()
+    return {"items": [specific_location_option_dict(row) for row in rows]}
+
+
+@router.post("/specific-locations")
+def create_notice_specific_location(payload: NoticeSpecificLocationRequest):
+    init_notice_db()
+    values = normalize_specific_location_payload(payload)
+    with connect() as con:
+        try:
+            cur = con.execute(
+                """
+                INSERT INTO notice_specific_location_options(name, sort_order)
+                VALUES (?, ?)
+                """,
+                (values["name"], values["sort_order"]),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="이미 등록된 특정위치입니다.")
+        row = con.execute("SELECT * FROM notice_specific_location_options WHERE id = ?", (cur.lastrowid,)).fetchone()
+        con.commit()
+    return specific_location_option_dict(row)
+
+
+@router.delete("/specific-locations/{option_id}")
+def delete_notice_specific_location(option_id: int):
+    init_notice_db()
+    with connect() as con:
+        existing = con.execute("SELECT * FROM notice_specific_location_options WHERE id = ?", (option_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="특정위치 옵션을 찾을 수 없습니다.")
+        con.execute("DELETE FROM notice_specific_location_options WHERE id = ?", (option_id,))
+        con.commit()
+    return {"deleted": True, "id": option_id}
+
+
 @router.get("/locations")
 def list_notice_locations():
     init_notice_db()
@@ -701,6 +790,7 @@ def list_notices(
               OR location LIKE ?
               OR COALESCE(line, '') LIKE ?
               OR COALESCE(floor, '') LIKE ?
+              OR COALESCE(specific_location, '') LIKE ?
               OR COALESCE(board_name, '') LIKE ?
               OR COALESCE(attachment_filename, '') LIKE ?
               OR COALESCE(advertiser, '') LIKE ?
@@ -708,7 +798,7 @@ def list_notices(
             )
             """
         )
-        params.extend([like, like, like, like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like, like, like, like])
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     params.extend([limit, offset])
     with connect() as con:
@@ -740,6 +830,7 @@ async def create_notice(
     location: str = Form(...),
     line: str | None = Form(None),
     floor: str | None = Form(None),
+    specific_location: str | None = Form(None),
     board_name: str | None = Form(None),
     start_date: str = Form(...),
     end_date: str = Form(...),
@@ -772,15 +863,16 @@ async def create_notice(
         normalized_description = normalize_text(description, "내용", 1000)
         normalized_advertiser = normalize_text(advertiser, "게시자", 80)
         normalized_contact = normalize_text(contact, "연락처", 80)
+        normalized_specific_location = normalize_text(specific_location, "특정위치", 120)
         normalized_status = normalize_status(status)
         normalized_note = normalize_text(note, "메모", 500)
         for target in targets:
             cur = con.execute(
                 """
                 INSERT INTO board_posts
-                (category, title, description, location, line, floor, board_name, start_date, end_date, removal_due_date,
+                (category, title, description, location, line, floor, specific_location, board_name, start_date, end_date, removal_due_date,
                  advertiser, contact, status, note, image_url, attachment_url, attachment_filename, attachment_content_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     normalized_category,
@@ -789,6 +881,7 @@ async def create_notice(
                     target["location"],
                     target["line"],
                     target["floor"],
+                    normalized_specific_location,
                     target["floor"],
                     normalized_start,
                     normalized_end,
@@ -835,6 +928,7 @@ def update_notice(notice_id: int, payload: NoticeUpdateRequest):
             "location": normalize_text(values.get("location"), "동", 120, required=True),
             "line": normalize_text(values.get("line"), "라인", 80, required=True),
             "floor": normalize_text(values.get("floor") or values.get("board_name"), "층", 80),
+            "specific_location": normalize_text(values.get("specific_location"), "특정위치", 120),
             "board_name": normalize_text(values.get("floor") or values.get("board_name"), "층", 80),
             "start_date": normalized_start,
             "end_date": normalized_end,
@@ -847,7 +941,7 @@ def update_notice(notice_id: int, payload: NoticeUpdateRequest):
         con.execute(
             """
             UPDATE board_posts
-            SET category = ?, title = ?, description = ?, location = ?, line = ?, floor = ?, board_name = ?,
+            SET category = ?, title = ?, description = ?, location = ?, line = ?, floor = ?, specific_location = ?, board_name = ?,
                 start_date = ?, end_date = ?, removal_due_date = ?, advertiser = ?, contact = ?,
                 status = ?, note = ?, updated_at = datetime('now')
             WHERE id = ?

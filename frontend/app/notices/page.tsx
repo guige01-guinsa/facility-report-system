@@ -14,6 +14,7 @@ type BoardPost = {
   location: string;
   line: string | null;
   floor: string | null;
+  specific_location: string | null;
   board_name: string | null;
   start_date: string;
   end_date: string;
@@ -39,6 +40,12 @@ type LocationOption = {
   building: string;
   line: string;
   floor: string;
+  sort_order: number;
+};
+
+type SpecificLocationOption = {
+  id: number;
+  name: string;
   sort_order: number;
 };
 
@@ -84,6 +91,11 @@ type LocationGenerateState = {
   sort_order_start: string;
 };
 
+type SpecificLocationFormState = {
+  name: string;
+  sort_order: string;
+};
+
 type FormState = {
   category: NoticeCategory;
   title: string;
@@ -91,6 +103,7 @@ type FormState = {
   location: string;
   line: string;
   floor: string;
+  specific_location: string;
   start_date: string;
   end_date: string;
   removal_due_date: string;
@@ -133,6 +146,7 @@ const blankForm = (): FormState => {
     location: '',
     line: '',
     floor: '',
+    specific_location: '',
     start_date: today,
     end_date: formatDateInput(end),
     removal_due_date: formatDateInput(removal),
@@ -149,6 +163,11 @@ const blankLocationGenerator = (): LocationGenerateState => ({
   floors: '',
   excluded_floors: '',
   sort_order_start: '0',
+});
+
+const blankSpecificLocationForm = (): SpecificLocationFormState => ({
+  name: '',
+  sort_order: '0',
 });
 
 const blankTargetScope = (): TargetScopeState => ({
@@ -260,6 +279,7 @@ function formFromNotice(row: BoardPost): FormState {
     location: row.location || '',
     line: row.line || '',
     floor: row.floor || row.board_name || '',
+    specific_location: (row as BoardPost & { specific_location?: string }).specific_location || '',
     start_date: row.start_date || '',
     end_date: row.end_date || '',
     removal_due_date: row.removal_due_date || '',
@@ -281,7 +301,9 @@ function batchId() {
 export default function NoticeBoardPage() {
   const [posts, setPosts] = useState<BoardPost[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
+  const [specificLocationOptions, setSpecificLocationOptions] = useState<SpecificLocationOption[]>([]);
   const [locationGenerator, setLocationGenerator] = useState<LocationGenerateState>(() => blankLocationGenerator());
+  const [specificLocationForm, setSpecificLocationForm] = useState<SpecificLocationFormState>(() => blankSpecificLocationForm());
   const [locationPreview, setLocationPreview] = useState<GeneratedLocationPreview[]>([]);
   const [locationPreviewCount, setLocationPreviewCount] = useState(0);
   const [locationPreviewTruncated, setLocationPreviewTruncated] = useState(false);
@@ -355,8 +377,15 @@ export default function NoticeBoardPage() {
     setLocationOptions(Array.isArray(data.items) ? data.items : []);
   }
 
+  async function loadSpecificLocations() {
+    const res = await fetch(`${getApiBase()}/api/notices/specific-locations`);
+    if (!res.ok) throw new Error(await responseMessage(res));
+    const data = await res.json();
+    setSpecificLocationOptions(Array.isArray(data.items) ? data.items : []);
+  }
+
   useEffect(() => {
-    Promise.all([loadPosts(), loadLocations()]).catch(err => setNotice(err instanceof Error ? err.message : '게시물을 불러오지 못했습니다.'));
+    Promise.all([loadPosts(), loadLocations(), loadSpecificLocations()]).catch(err => setNotice(err instanceof Error ? err.message : '게시물을 불러오지 못했습니다.'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -510,6 +539,47 @@ export default function NoticeBoardPage() {
       setNotice(`${building} 위치 데이터를 삭제했습니다.`);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : '위치 데이터 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function saveSpecificLocationOption() {
+    if (!specificLocationForm.name.trim()) {
+      setNotice('특정위치 이름을 입력해 주세요.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${getApiBase()}/api/notices/specific-locations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: specificLocationForm.name,
+          sort_order: Number(specificLocationForm.sort_order || 0),
+        }),
+      });
+      if (!res.ok) throw new Error(await responseMessage(res));
+      await loadSpecificLocations();
+      setSpecificLocationForm(blankSpecificLocationForm());
+      setNotice('특정위치 옵션을 등록했습니다.');
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '특정위치 저장 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function deleteSpecificLocationOption(option: SpecificLocationOption) {
+    if (!confirm(`${option.name} 옵션을 삭제하시겠습니까?`)) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${getApiBase()}/api/notices/specific-locations/${option.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await responseMessage(res));
+      await loadSpecificLocations();
+      setNotice('특정위치 옵션을 삭제했습니다.');
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '특정위치 삭제 중 오류가 발생했습니다.');
     } finally {
       setLoading(false);
     }
@@ -726,6 +796,17 @@ export default function NoticeBoardPage() {
                   </select>
                 </label>
               </div>
+              <label className="grid gap-1 text-sm font-bold">
+                특정위치
+                <select value={form.specific_location} onChange={event => updateField('specific_location', event.target.value)} className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-3 font-semibold">
+                  <option value="">특정위치 선택</option>
+                  {specificLocationOptions.map(option => (
+                    <option key={option.id} value={option.name}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               {!editingId && (
                 <div className="grid gap-2">
                   <button type="button" onClick={addSelectedTarget} className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-black text-slate-800">
@@ -895,6 +976,28 @@ export default function NoticeBoardPage() {
                   </div>
                 </div>
               </div>
+
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <div className="text-sm font-black text-slate-900">특정위치 관리</div>
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_120px_auto]">
+                  <input value={specificLocationForm.name} onChange={event => setSpecificLocationForm(current => ({ ...current, name: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-semibold" placeholder="예: 승강기 앞, 출입구, 지하주차장 입구" />
+                  <input value={specificLocationForm.sort_order} onChange={event => setSpecificLocationForm(current => ({ ...current, sort_order: event.target.value }))} className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-semibold" inputMode="numeric" placeholder="순서" />
+                  <button type="button" onClick={saveSpecificLocationOption} disabled={loading} className="rounded-xl bg-emerald-800 px-3 py-3 text-sm font-black text-white disabled:bg-slate-300">
+                    등록
+                  </button>
+                </div>
+                <div className="mt-3 grid max-h-48 gap-2 overflow-y-auto pr-1">
+                  {specificLocationOptions.map(option => (
+                    <div key={option.id} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                      <span className="min-w-0 break-words text-xs font-bold text-slate-700">{option.name}</span>
+                      <button type="button" onClick={() => deleteSpecificLocationOption(option)} className="shrink-0 rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-bold text-rose-700">
+                        삭제
+                      </button>
+                    </div>
+                  ))}
+                  {specificLocationOptions.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">등록된 특정위치 옵션이 없습니다.</div>}
+                </div>
+              </div>
             </details>
           </form>
 
@@ -965,7 +1068,7 @@ export default function NoticeBoardPage() {
                       </div>
                       <h3 className="mt-2 break-words text-lg font-black text-slate-950">{post.title}</h3>
                       <div className="mt-2 grid gap-1 text-sm font-semibold text-slate-600 sm:grid-cols-2">
-                        <div>위치: {post.location}{post.line ? ` / ${post.line}` : ''}{post.floor ? ` / ${post.floor}` : ''}</div>
+                        <div>위치: {post.location}{post.line ? ` / ${post.line}` : ''}{post.floor ? ` / ${post.floor}` : ''}{post.specific_location ? ` / ${post.specific_location}` : ''}</div>
                         <div>기간: {post.start_date} ~ {post.end_date}</div>
                         <div>철거 예정: {post.removal_due_date || post.end_date}</div>
                         <div>게시자: {post.advertiser || '-'}</div>
