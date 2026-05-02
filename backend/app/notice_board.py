@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import json
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -362,6 +363,40 @@ def normalize_location_payload(payload: NoticeLocationRequest) -> dict[str, Any]
     }
 
 
+def normalize_notice_location_target(raw: Any) -> dict[str, str | None]:
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="선택한 위치 정보를 다시 확인해 주세요.")
+    location = normalize_text(raw.get("location") or raw.get("building"), "동", 120, required=True)
+    line = normalize_text(raw.get("line"), "라인", 80, required=True)
+    floor = normalize_text(raw.get("floor") or raw.get("board_name"), "층", 80)
+    return {"location": location, "line": line, "floor": floor}
+
+
+def parse_notice_location_targets(location_targets_json: str | None) -> list[dict[str, str | None]]:
+    text = str(location_targets_json or "").strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="선택한 위치 정보 형식을 읽지 못했습니다.")
+    if not isinstance(payload, list) or not payload:
+        raise HTTPException(status_code=400, detail="선택한 위치 정보가 비어 있습니다.")
+    deduped: list[dict[str, str | None]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in payload:
+        normalized = normalize_notice_location_target(item)
+        key = (
+            normalized["location"] or "",
+            normalized["line"] or "",
+            normalized["floor"] or "",
+        )
+        if key not in seen:
+            seen.add(key)
+            deduped.append(normalized)
+    return deduped
+
+
 def split_spec_tokens(spec: str | None) -> list[str]:
     raw = str(spec or "").replace("\r", "\n")
     tokens = [token.strip() for chunk in raw.split("\n") for token in chunk.split(",")]
@@ -713,14 +748,16 @@ async def create_notice(
     contact: str | None = Form(None),
     status: str | None = Form("posted"),
     note: str | None = Form(None),
+    location_targets_json: str | None = Form(None),
     image: UploadFile | None = File(None),
     attachment: UploadFile | None = File(None),
 ):
     init_notice_db()
     normalized_category = normalize_category(category)
     normalized_title = normalize_text(title, "제목", 120, required=True)
-    normalized_location = normalize_text(location, "동", 120, required=True)
-    normalized_line = normalize_text(line, "라인", 80, required=True)
+    location_targets = parse_notice_location_targets(location_targets_json)
+    normalized_location = normalize_text(location, "동", 120, required=not location_targets)
+    normalized_line = normalize_text(line, "라인", 80, required=not location_targets)
     normalized_floor = normalize_text(floor or board_name, "층", 80)
     normalized_start = normalize_date_value(start_date, "게시 시작일", required=True)
     normalized_end = normalize_date_value(end_date, "게시 종료일", required=True)
@@ -729,38 +766,49 @@ async def create_notice(
     attachment_file = await save_notice_attachment(attachment or image)
     attachment_url = attachment_file["url"] if attachment_file else None
     image_url = attachment_url if attachment_file and attachment_file["is_image"] == "1" else None
+    targets = location_targets or [{"location": normalized_location, "line": normalized_line, "floor": normalized_floor}]
+    created_rows: list[sqlite3.Row] = []
     with connect() as con:
-        cur = con.execute(
-            """
-            INSERT INTO board_posts
-            (category, title, description, location, line, floor, board_name, start_date, end_date, removal_due_date,
-             advertiser, contact, status, note, image_url, attachment_url, attachment_filename, attachment_content_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized_category,
-                normalized_title,
-                normalize_text(description, "내용", 1000),
-                normalized_location,
-                normalized_line,
-                normalized_floor,
-                normalized_floor,
-                normalized_start,
-                normalized_end,
-                normalized_removal_due,
-                normalize_text(advertiser, "게시자", 80),
-                normalize_text(contact, "연락처", 80),
-                normalize_status(status),
-                normalize_text(note, "메모", 500),
-                image_url,
-                attachment_url,
-                attachment_file["filename"] if attachment_file else None,
-                attachment_file["content_type"] if attachment_file else None,
-            ),
-        )
-        row = con.execute("SELECT * FROM board_posts WHERE id = ?", (cur.lastrowid,)).fetchone()
+        normalized_description = normalize_text(description, "내용", 1000)
+        normalized_advertiser = normalize_text(advertiser, "게시자", 80)
+        normalized_contact = normalize_text(contact, "연락처", 80)
+        normalized_status = normalize_status(status)
+        normalized_note = normalize_text(note, "메모", 500)
+        for target in targets:
+            cur = con.execute(
+                """
+                INSERT INTO board_posts
+                (category, title, description, location, line, floor, board_name, start_date, end_date, removal_due_date,
+                 advertiser, contact, status, note, image_url, attachment_url, attachment_filename, attachment_content_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_category,
+                    normalized_title,
+                    normalized_description,
+                    target["location"],
+                    target["line"],
+                    target["floor"],
+                    target["floor"],
+                    normalized_start,
+                    normalized_end,
+                    normalized_removal_due,
+                    normalized_advertiser,
+                    normalized_contact,
+                    normalized_status,
+                    normalized_note,
+                    image_url,
+                    attachment_url,
+                    attachment_file["filename"] if attachment_file else None,
+                    attachment_file["content_type"] if attachment_file else None,
+                ),
+            )
+            created_rows.append(con.execute("SELECT * FROM board_posts WHERE id = ?", (cur.lastrowid,)).fetchone())
         con.commit()
-    return notice_dict(row)
+    notices = [notice_dict(row) for row in created_rows]
+    if len(notices) == 1:
+        return notices[0]
+    return {"created_count": len(notices), "items": notices}
 
 
 @router.patch("/{notice_id}")

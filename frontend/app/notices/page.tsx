@@ -49,6 +49,12 @@ type GeneratedLocationPreview = {
   sort_order: number;
 };
 
+type SelectedTarget = {
+  location: string;
+  line: string;
+  floor: string;
+};
+
 type Summary = {
   total: number;
   posted: number;
@@ -246,6 +252,10 @@ function formFromNotice(row: BoardPost): FormState {
   };
 }
 
+function targetKey(target: SelectedTarget) {
+  return `${target.location}__${target.line}__${target.floor}`;
+}
+
 export default function NoticeBoardPage() {
   const [posts, setPosts] = useState<BoardPost[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
@@ -255,6 +265,7 @@ export default function NoticeBoardPage() {
   const [locationPreviewTruncated, setLocationPreviewTruncated] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [form, setForm] = useState<FormState>(() => blankForm());
+  const [selectedTargets, setSelectedTargets] = useState<SelectedTarget[]>([]);
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
@@ -319,6 +330,7 @@ export default function NoticeBoardPage() {
 
   function resetForm() {
     setForm(blankForm());
+    setSelectedTargets([]);
     setAttachmentFile(null);
     setEditingId(null);
   }
@@ -329,6 +341,21 @@ export default function NoticeBoardPage() {
 
   function updateLine(value: string) {
     setForm(current => ({ ...current, line: value, floor: '' }));
+  }
+
+  function addSelectedTarget() {
+    if (!form.location.trim() || !form.line.trim() || !form.floor.trim()) {
+      setNotice('동, 라인, 층을 모두 선택한 뒤 추가해 주세요.');
+      return;
+    }
+    const nextTarget = { location: form.location, line: form.line, floor: form.floor };
+    setSelectedTargets(current => (current.some(item => targetKey(item) === targetKey(nextTarget)) ? current : [...current, nextTarget]));
+    setForm(current => ({ ...current, location: '', line: '', floor: '' }));
+    setNotice('선택 위치를 추가했습니다.');
+  }
+
+  function removeSelectedTarget(target: SelectedTarget) {
+    setSelectedTargets(current => current.filter(item => targetKey(item) !== targetKey(target)));
   }
 
   async function previewLocationGeneration() {
@@ -400,8 +427,16 @@ export default function NoticeBoardPage() {
 
   async function submitPost(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!form.title.trim() || !form.location.trim() || !form.line.trim()) {
+    if (!form.title.trim()) {
+      setNotice('제목을 입력해 주세요.');
+      return;
+    }
+    if (editingId && (!form.location.trim() || !form.line.trim())) {
       setNotice('제목, 동, 라인을 입력해 주세요.');
+      return;
+    }
+    if (!editingId && selectedTargets.length === 0) {
+      setNotice('게시할 동/라인/층을 하나 이상 추가해 주세요.');
       return;
     }
     setLoading(true);
@@ -417,9 +452,18 @@ export default function NoticeBoardPage() {
       } else {
         const body = new FormData();
         Object.entries(form).forEach(([key, value]) => body.append(key, String(value || '')));
+        body.set('location', selectedTargets[0]?.location || '');
+        body.set('line', selectedTargets[0]?.line || '');
+        body.set('floor', selectedTargets[0]?.floor || '');
+        body.append('location_targets_json', JSON.stringify(selectedTargets));
         if (attachmentFile) body.append('attachment', attachmentFile);
         const res = await fetch(`${getApiBase()}/api/notices`, { method: 'POST', body });
         if (!res.ok) throw new Error(await responseMessage(res));
+        const data = await res.json();
+        resetForm();
+        await loadPosts();
+        setNotice(`게시물 ${Number(data.created_count || 1)}건 등록이 완료되었습니다.`);
+        return;
       }
       resetForm();
       await loadPosts();
@@ -470,6 +514,7 @@ export default function NoticeBoardPage() {
   function startEdit(post: BoardPost) {
     setEditingId(post.id);
     setForm(formFromNotice(post));
+    setSelectedTargets([]);
     setAttachmentFile(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -574,6 +619,32 @@ export default function NoticeBoardPage() {
                   </select>
                 </label>
               </div>
+              {!editingId && (
+                <div className="grid gap-2">
+                  <button type="button" onClick={addSelectedTarget} className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-black text-slate-800">
+                    위치 추가
+                  </button>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm font-black text-slate-900">선택한 위치</div>
+                      <div className="text-xs font-bold text-slate-500">{selectedTargets.length}건</div>
+                    </div>
+                    <div className="mt-3 grid gap-2">
+                      {selectedTargets.map(target => (
+                        <div key={targetKey(target)} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                          <span className="min-w-0 break-words text-xs font-bold text-slate-700">
+                            {target.location} / {target.line} / {target.floor}
+                          </span>
+                          <button type="button" onClick={() => removeSelectedTarget(target)} className="shrink-0 rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-bold text-rose-700">
+                            제거
+                          </button>
+                        </div>
+                      ))}
+                      {selectedTargets.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs font-bold text-slate-500">위치를 추가하면 여기에서 한 번에 등록됩니다.</div>}
+                    </div>
+                  </div>
+                </div>
+              )}
               {locationOptions.length === 0 && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-950">
                   먼저 아래 자동 생성에서 동/라인/층을 등록하세요.

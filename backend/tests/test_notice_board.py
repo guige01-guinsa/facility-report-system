@@ -106,6 +106,33 @@ class NoticeBoardTests(unittest.TestCase):
         self.assertTrue(body["attachment_url"].endswith(".pdf"))
         self.assertIsNone(body["image_url"])
 
+    def test_notice_create_supports_multiple_locations(self):
+        created = self.client.post(
+            "/api/notices",
+            data={
+                "category": "notice",
+                "title": "복수 위치 게시물",
+                "location": "101동",
+                "line": "1라인",
+                "floor": "1층",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-10",
+                "location_targets_json": '[{"location":"101동","line":"1라인","floor":"1층"},{"location":"102동","line":"2라인","floor":"3층"}]',
+            },
+            files={"attachment": ("notice.pdf", b"%PDF-1.4\n", "application/pdf")},
+        )
+
+        self.assertEqual(created.status_code, 200)
+        body = created.json()
+        self.assertEqual(body["created_count"], 2)
+        self.assertEqual(len(body["items"]), 2)
+        self.assertEqual(body["items"][0]["attachment_filename"], "notice.pdf")
+        self.assertEqual(body["items"][1]["location"], "102동")
+
+        listing = self.client.get("/api/notices", params={"q": "복수 위치 게시물"})
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(len(listing.json()), 2)
+
     def test_location_generator_supports_preview_and_insert(self):
         preview = self.client.post(
             "/api/notices/locations/generate",
